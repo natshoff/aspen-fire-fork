@@ -1,20 +1,12 @@
 
 # Load the libraries and data
-
-gc() # clear memory
 library(tidyverse)
 library(caret)
 library(randomForest)
 library(rfUtilities)
+library(ggcorrplot)
+
 getwd()
-
-# Load the sampled presence/background data
-
-Pres <- read_csv('data/tabular/mod/training/sampled/presence_samples.csv') %>%
-  mutate(label = 1)
-Bg <- read_csv('data/tabular/mod/training/sampled/background_samples.csv') %>%
-  mutate(label = 0)
-
 
 ################################
 # Set up the parallel processing
@@ -26,10 +18,15 @@ library(doParallel)
 cl = makeCluster(parallel::detectCores()-1, type = "SOCK")
 registerDoParallel(cl)
 
+###########################################
+# Prep the sampled presence/background data
 
-#############################################
-# Merge the presence/background learning data
+Pres <- read_csv('data/tabular/mod/training/sampled/presence_samples.csv') %>%
+  mutate(label = 1)
+Bg <- read_csv('data/tabular/mod/training/sampled/background_samples.csv') %>%
+  mutate(label = 0)
 
+# Merge and tidy
 pbl <- bind_rows(Pres,Bg) %>%
   mutate(PresAbs = as.factor(label)) %>%
   dplyr::select(-c(mask,.geo,`system:index`,label,grid_id,latitude,longitude,n_sample))
@@ -45,20 +42,40 @@ X <- pbl %>%
   na.omit()
 
 # Check the % of the positive class, does it meet the 1/3 rule for sample balance?
-(dim(pbl[pbl$PresAbs == 1, ])[1] / dim(pbl)[1]) * 100
+if ((dim(pbl[pbl$PresAbs == 1, ])[1] / dim(pbl)[1]) * 100 <= 33.0) {
+  print("Lower than the 1/3 rule ...")
+  print((dim(pbl[pbl$PresAbs == 1, ])[1] / dim(pbl)[1]) * 100)
+}
 
 
 ###########################################################################
 # Test for multicolinearity in the PBL data using the 'rfUtilities' package
+# Create a correlation matrix plot (ggcorrplot)
+# Test with 'caret' and 'rfutilities'
 
 set.seed(1234)
 
-# Simple test
+# Correlation Matrix Plot
+
+thresh <- 0.5
+corr <- cor(X)
+corr[abs(corr) < thresh] <- 0
+
+ggcorrplot(corr, method = "square", 
+           type = "lower", 
+           lab = FALSE, 
+           lab_size = 3, 
+           colors = c("#6D9EC1", "white", "#E46726"), 
+           title = "Correlation Matrix",
+           ggtheme = theme_minimal())
+
+
+# Simple test (no permutation)
 (mc <- rfUtilities::multi.collinear(X, perm=FALSE, p=0.05))
 
 # Permutated test with leave out
 mvm = rfUtilities::multi.collinear(
-  X, perm=TRUE, leave.out=TRUE, n=101, p=0.0000001
+  X, perm=TRUE, leave.out=TRUE, n=1001, p=0.05
 )
 
 # Check where frequency > 0
@@ -72,14 +89,14 @@ y <- df$PresAbs
 X <- df %>% dplyr::select(-PresAbs)
 
 # Clean up
-rm(mvm)
+rm(mc,mvm,X_sc)
 
 
 ###########################
 # Parameterize the RF model
 
 # Tune the mtry parameter using randomForest
-bmtry <- tuneRF(X, y, mtryStart=5, stepFactor=1.5, improve=1e-5, ntreeTry=501)
+bmtry <- tuneRF(X, y, mtryStart=2, stepFactor=1.5, improve=1e-5, ntreeTry=1001)
 print(bmtry)
 
 # Grab the best mtry
@@ -128,8 +145,8 @@ gc()
 rf.fit <- randomForest(
   y=y, 
   x=X[,sel.vars], # optimized features 'sel.vars'
-  ntree=1001, 
-  mtry=mtry, # from tuneRF
+  ntree=101, 
+  mtry=3, # from tuneRF
   importance=TRUE,
   proximity=TRUE,
   do.trace=50

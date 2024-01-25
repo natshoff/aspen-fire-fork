@@ -26,9 +26,9 @@ prob_img = rxr.open_rasterio(
 srme = os.path.join(datamod,'boundaries/us_eco_l3_srme.gpkg')
 # White River National Forest
 wrnf = os.path.join(maindir,'wrnf_boundary.gpkg')
-
 # Combine in a list
 gdfs = [srme,wrnf]
+
 # Clip to case study ROI
 print("Clipping for case study ROIs ...")
 for g in gdfs:

@@ -10,18 +10,32 @@ source('setup.R')
 
 ## STUDY AREA
 
-```{r}
+```{r fig.height=5, fig.width=3.5}
 ggplot() +
   geom_sf(data=srme) +
   geom_sf(data=wrnf, fill="darkgrey") +
+  geom_sf(data=blocks, fill=NA, lwd=0.4) +
   coord_sf(crs="EPSG:32613") +
   theme_bw(11)
 ```
 
-## Figure 1: Surface Reflectance / Spectral Response
+## Figure 1: Surface Reflectance / Spectral Response and Phenological Characteristics
 
 ```{r}
+
+# Spectral Response
+ts <- read_csv('../../data/tabular/mod/results/s2msi_l2a_aspen_TSy2019.csv', show_col_types = FALSE) %>% 
+  select(-c(id,.geo,TCB,TCG,TCW))
+
+# Join the observations to the spatial data and retrieve which block they relate to
+ref_sp <- st_read("../../data/spatial/mod/training/points/gee/pi_points_srme_m500_.shp") %>%
+  st_join(blocks) %>%
+  rename(block_id = id)
+
+ts <- ts %>% left_join(ref_sp%>%as_tibble()%>%select(uid,block_id), by="uid")
+
 head(ts)
+
 ```
 
 Tidy the time-series data.
@@ -31,33 +45,38 @@ Tidy the time-series data.
 3. Generate mean/median/stdev of reflectance by image date,
 4. Calculate weekly summaries
 
-Filter using the pixel cloud probability, scene classification, and remove erroneously high reflectance values:
-
 ```{r fig.width=5, fig.height=3.5}
+
+# Filter out cloud-contaminated pixels based on the Cloud Score + values
+# Reference:  https://medium.com/google-earth/all-clear-with-cloud-score-bd6ee2e2235e
 
 tsp <- ts %>%
   filter(
-    probability < 51, # less than 51% cloud probability
-    ! SCL > 7 & SCL <= 10, # remove points labeled as cloud
-    B8 < 5000 # remove points with very high near-infrared reflectance
+    cs >= 0.90, # >= 0.6 Cloud Score + contamination
   ) %>%
   # add the month as a column
-  mutate(month = month(image_date, label=TRUE, abbr=TRUE))
+  mutate(month = month(image_date, label=TRUE, abbr=TRUE)) %>%
+  # Filter null values
+  filter(complete.cases(.))
+
+# Test using some visualizations
 
 tsp %>%
   group_by(image_date) %>%
-  summarize(band = median(B8)) %>%
+  summarize(band = median(NDRE)) %>%
   ggplot(aes(x=image_date,y=band)) +
-  geom_point(size=1.2) +
-  geom_smooth(method="gam") +
-  theme_bw(14)
+  geom_point(size=0.8) +
+  geom_smooth(method="loess") +
+  labs(x="Image Date", y="NDRE") +
+  theme_bw(11)
 
-ggplot(data=tsp, aes(x=B8, y=month)) +
+ggplot(data=tsp, aes(x=NDRE, y=month)) +
   geom_boxplot() +
   coord_flip() +
-  theme_bw()
+  labs(y="Image Date", x="NDRE") +
+  theme_bw(11)
 
-rm(ts)
+# rm(ts)
 
 ```
 
@@ -65,39 +84,140 @@ Now pivot the table longer:
 
 ```{r}
 
-tsp <- tsp %>%
+tsp_ <- tsp %>%
   select(c(starts_with("B"),image_date,
-           SLAVI,NDRE,NDMI,ChlRE,IRECI)) %>%
-  group_by(image_date) %>%
+           SLAVI,NDRE,NDMI,ChlRE,IRECI,MCARI)) %>%
+  group_by(image_date, block_id) %>%
   summarize_all(list(median)) %>%
   pivot_longer(
-    cols = -image_date,
+    cols = -c(image_date,block_id),
     names_to="band",
-    values_to="refl"
+    values_to="reflectance"
   ) %>%
   # add a month and week label
   mutate(
     month = month(image_date, label=TRUE, abbr=TRUE),
     week = isoweek(image_date),
-    week2 = cut.Date(image_date, breaks="2 week", labels=FALSE)
+    biweek = cut.Date(image_date, breaks="2 week", labels=FALSE)
   )
 
-head(tsp)
+# # Join back the phenology metrics
+# blocks_df <- blocks %>% 
+#   select(id,Greenup_1,MidGreenup_1,Maturity_1,Peak_1,MidGreendown_1,Dormancy_1) %>%
+#   rename(
+#     block_id = id,
+#     greenup = Greenup_1,
+#     midgreenup = MidGreenup_1,
+#     maturity = Maturity_1,
+#     peak = Peak_1,
+#     midgreendown = MidGreendown_1,
+#     dormancy = Dormancy_1
+#   )
+# 
+# tsp_ <- tsp_ %>% 
+#   left_join(blocks_df,by="block_id") %>%
+#   as_tibble() %>%
+#   select(-geom)
+# 
+# rm(blocks_df)
 
+head(tsp_, n=19)
+
+```
+
+Breakpoint analysis to identify significant shift in spectral signature throughout the year based on NDRE:
+
+```{r}
+
+# Isolate one of the vegetation indices (Normalized Difference Red-edge Index)
+df <- tsp_ %>% 
+  filter(band == "NDRE") %>% 
+  select(image_date,week,reflectance) %>%
+  group_by(image_date,week) %>%
+  summarize(reflectance = median(reflectance)) %>%
+  ungroup()
+
+# Create a weekly time-series object
+df.ts <- ts(df$reflectance, frequency = 52)
+
+# Implement the changepoint analysis based on NDRE
+result <- changepoint::cpt.meanvar(df.ts, method="PELT")
+bp.ind <- changepoint::cpts(result)
+
+# Map breakpoints to dates
+print("Breakpoint weeks:")
+bp.dates <- df$week[bp.ind]
+bp.dates
+
+# print("Phenology weeks across spatial blocks:")
+# print(paste0("Greenup = from week ",range(lubridate::week(tsp_$greenup))[1]," to ",range(lubridate::week(tsp_$greenup))[2]))
+# print(paste0("MidGreenup = from week ",range(lubridate::week(tsp_$midgreenup))[1]," to ",range(lubridate::week(tsp_$midgreenup))[2]))
+# print(paste0("Maturity = from week ",range(lubridate::week(tsp_$maturity))[1]," to ",range(lubridate::week(tsp_$maturity))[2]))
+# print(paste0("Peak = from week ",range(lubridate::week(tsp_$peak))[1]," to ",range(lubridate::week(tsp_$peak))[2]))
+# print(paste0("Mid Greendown = from week ",range(lubridate::week(tsp_$midgreendown))[1]," to ",range(lubridate::week(tsp_$midgreendown))[2]))
+# print(paste0("Dormancy = from week ",range(lubridate::week(tsp_$dormancy))[1]," to ",range(lubridate::week(tsp_$dormancy))[2]))
+
+# Plot the result
+plot(result)
+
+```
+
+Perform the analysis by spatial block grid to get an idea of the variation in time-series breakpoints.
+
+```{r}
+results <- list()
+
+for(block in unique(df$block_id)) {
+    # Subset data for the block
+    block_data <- df %>% filter(block_id == block)
+
+    # Create time series (assuming weekly aggregation)
+    block_ts <- ts(block_data$reflectance, frequency=52)
+
+    # Perform breakpoint analysis
+    block_result <- changepoint::cpt.meanvar(block_ts, method="PELT")
+
+    # Store results with block identifier
+    results[[block]] <- changepoint::cpts(block_result)
+}
+
+# Create an empty data frame to store breakpoint information
+breakpoint_data <- data.frame(block_id = character(), breakpoint_week = integer())
+
+# Loop through each block and add its breakpoints to the data frame
+for(block in names(results)) {
+    block_breakpoints <- results[[block]]
+    block_data <- data.frame(block_id = rep(block, length(block_breakpoints)), 
+                             breakpoint_week = block_breakpoints)
+    breakpoint_data <- rbind(breakpoint_data, block_data)
+}
+
+# Convert the 'breakpoint_week' to actual dates
+# This conversion depends on your specific date arrangement. Here's a basic example:
+start_date <- as.Date("2019-01-02")  # Replace with your dataset's start date
+breakpoint_data$breakpoint_date <- start_date + (breakpoint_data$breakpoint_week - 1) * 7
+
+ggplot(breakpoint_data, aes(x = breakpoint_date, y = block_id, group = block_id)) +
+    geom_line() +  # Optionally connect breakpoints in each block
+    geom_point(size = 3) +  # Breakpoint markers
+    theme_minimal() +
+    labs(x = "Date", y = "Spatial Block") +
+    theme(panel.grid.major.y = element_blank(),  # Removes horizontal grid lines
+          panel.grid.minor.y = element_blank())
 ```
 
 Plot of median daily observations:
 
 ```{r fig.height=5, fig.width=9}
 # Reorder band factors
-tsp$band <- factor(tsp$band, 
+tsp_$band <- factor(tsp_$band, 
                    levels = c("B2","B3","B4","B5","B6",
                               "B7","B8","B8A","B11","B12",
-                              "ChlRE","IRECI","NDMI","NDRE","SLAVI"))
+                              "ChlRE","IRECI","NDMI","NDRE","SLAVI","MCARI"))
 
-tsp %>%
+tsp_ %>%
   filter(str_detect(band,"B")) %>%
-  ggplot(aes(x=image_date,y=refl,color=factor(band))) +
+  ggplot(aes(x=image_date,y=reflectance ,color=factor(band))) +
   geom_line(linewidth=0.4) +
   scale_color_viridis_d(option="turbo") +
   labs(x="Acquisition Date",y="Reflectance",color="S2 MSI Band") +
@@ -117,11 +237,11 @@ Gather the seasonal composite start and end dates:
 
 ```{r}
 # Summer
-(start_summer <- week(as.Date("2019-06-01")))
-(end_summer <- week(as.Date("2019-09-14")))
+(start_summer <- week(as.Date("2019-06-06")))
+(end_summer <- week(as.Date("2019-08-25")))
 # Autumn
-(start_autumn <- week(as.Date("2019-09-16")))
-(end_autumn <- week(as.Date("2019-11-30")))
+(start_autumn <- week(as.Date("2019-09-27")))
+(end_autumn <- week(as.Date("2019-11-01")))
 ```
 
 Generate the weekly median reflectance.
@@ -146,11 +266,10 @@ band_colors <- c(
 
 # Group by week, calculate the mean, plot
 
-f3a <- tsp %>%
+f3a <- tsp_ %>%
   filter(str_detect(band,"B")) %>%
   group_by(band,week) %>%
-  summarize(refl = mean(refl)) %>%
-  
+  summarize(refl = mean(reflectance)) %>%
   ggplot(aes(x=week,y=refl,color=factor(band))) +
   geom_line(linewidth=0.6) +
   scale_color_manual(values = band_colors) +
@@ -168,8 +287,13 @@ f3a <- tsp %>%
         legend.background = element_rect(fill="white", color="black"),
         plot.margin = unit(c(1.2,0.5,1.2,0.5), 'lines'),
         text = element_text(family = "Arial")) +
-  annotate('rect', xmin=start_summer, xmax=end_autumn, ymin=0, ymax=4000, alpha=.3, fill='gray') +
-  geom_vline(xintercept=start_autumn, linetype="dotted", lwd=0.8)
+  annotate('rect', xmin=start_summer, xmax=end_summer, ymin=0, ymax=6000, alpha=.3, fill='gray') +
+  annotate('rect', xmin=start_autumn, xmax=end_autumn, ymin=0, ymax=6000, alpha=.3, fill='gray') +
+  geom_vline(xintercept=start_summer, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=end_summer, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=start_autumn, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=end_autumn, linetype="dotted", lwd=0.8)
+
 f3a
 ```
 
@@ -179,13 +303,17 @@ Figure 1B: Time-series charts of the spectral indices:
 
 # All bands
 
-tsp %>%
+tsp_ %>%
   group_by(band,week) %>%
-  summarize(refl = mean(refl)) %>%
+  summarize(refl = mean(reflectance)) %>%
   ggplot(aes(x=week, y=refl, group=1)) +
   geom_line() +
-  annotate('rect', xmin=22, xmax=48, ymin=0, ymax=Inf, alpha=.3, fill='gray') +
-  geom_vline(xintercept=37, linetype="dotted") +
+  annotate('rect', xmin=start_summer, xmax=end_summer, ymin=0, ymax=6000, alpha=.3, fill='gray') +
+  annotate('rect', xmin=start_autumn, xmax=end_autumn, ymin=0, ymax=6000, alpha=.3, fill='gray') +
+  geom_vline(xintercept=start_summer, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=end_summer, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=start_autumn, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=end_autumn, linetype="dotted", lwd=0.8) +
   facet_wrap(. ~ band, scales = "free") +
   theme_minimal() +
   theme(axis.title.y = element_text(size=8,face="italic",
@@ -197,15 +325,19 @@ tsp %>%
 
 # Spectral indices
 
-f3b <- tsp %>%
+f3b <- tsp_ %>%
   filter(!str_detect(band,"B")) %>%
   group_by(band,week) %>%
-  summarize(refl = mean(refl)) %>%
+  summarize(refl = mean(reflectance)) %>%
   ggplot(aes(x=week, y=refl, group=1)) +
   geom_line(linewidth=0.6) +
   labs(x="Acquisition Week",y="Reflectance") +
-  annotate('rect', xmin=start_summer, xmax=end_autumn, ymin=0, ymax=Inf, alpha=.3, fill='gray') +
+  annotate('rect', xmin=start_summer, xmax=end_summer, ymin=0, ymax=6000, alpha=.3, fill='gray') +
+  annotate('rect', xmin=start_autumn, xmax=end_autumn, ymin=0, ymax=6000, alpha=.3, fill='gray') +
+  geom_vline(xintercept=start_summer, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=end_summer, linetype="dotted", lwd=0.8) +
   geom_vline(xintercept=start_autumn, linetype="dotted", lwd=0.8) +
+  geom_vline(xintercept=end_autumn, linetype="dotted", lwd=0.8) +
   facet_wrap(. ~ band, scales = "free") +
   theme_light(11) +
   theme(axis.title.y = element_text(size=11,face="italic",
@@ -225,17 +357,17 @@ Figure 3C: Boxplot of seasonal composites:
 ```{r}
 
 # Reorder band factors
-tsp$band <- factor(tsp$band, 
+tsp_$band <- factor(tsp_$band, 
                    levels = c("B2","B3","B4","B5","B6",
                               "B7","B8","B8A","B11","B12",
-                              "ChlRE","IRECI","NDMI","NDRE","SLAVI"))
+                              "ChlRE","IRECI","NDMI","NDRE","SLAVI","MCARI"))
 
 cols <- c(
   "Summer" = "#87CEEB", 
   "Autumn" = "#DAA520"
 )
 
-seasonal <- tsp %>%
+seasonal <- tsp_ %>%
   mutate(season = if_else(week>=22&week<=37,"Summer","na"),
          season = if_else(week>=37&week<=48,"Autumn",season)) %>%
   filter(season!="na")
@@ -244,7 +376,7 @@ seasonal$season <- factor(seasonal$season, levels = c("Summer","Autumn"))
   
 f3c <- seasonal %>%
   filter(str_detect(band,"B")) %>%
-  ggplot(aes(x=band,y=refl,fill=season)) +
+  ggplot(aes(x=band,y=reflectance,fill=season)) +
   geom_boxplot(outlier.size = 0.5, outlier.color = "grey30") +
   scale_fill_manual(values = cols) +
   theme_bw(16) +
@@ -267,7 +399,7 @@ Figure 1D: Seasonal differences in the spectral indices
 
 f3d <- seasonal %>%
   filter(!str_detect(band,"B")) %>%
-  ggplot(aes(y=refl)) +
+  ggplot(aes(y=reflectance)) +
   geom_boxplot(aes(fill=season)) +
   scale_fill_manual(values = cols) +
   facet_wrap(. ~ band, scales = "free") +
@@ -323,14 +455,13 @@ ggsave(f3_, file = "../../figures/Figure3_SpectralResponse_v2.png",
 Clean up the time-series / spectral response data:
 
 ```{r}
-rm(f3,f3_,f3a,f3b,f3c,f3d,seasonal,tsp)
+rm(f3,f3_,f3a,f3b,f3c,f3d,seasonal,tsp,band_colors,cols,end_autumn,end_summer,start_autumn,start_summer)
 gc()
 ```
 
 ## Figure 4: Model accuracy and feature importance plot
 
 Best Performing Model:
-
 
 Plot the AUC-PR and AUC-ROC.
 
@@ -343,13 +474,14 @@ Calculate the model averages using the optimum cutoff value:
 ```{r}
 # Without taking the average
 
-print("~~~~~Total (not averageing)~~~~~")
+print("~~~~~Total (not averageing) based on maximum F1~~~~~")
 
-(cutoffOptF1 = accmeas[which.max(accmeas$f1),]$cutoff)
-(precisionOptF1 = accmeas[which.max(accmeas$f1),]$precision)
-(recallOptF1 = accmeas[which.max(accmeas$f1),]$recall)
-(fprOpt = accmeas[which.max(accmeas$f1),]$fpr)
-(tprOpt = accmeas[which.max(accmeas$f1),]$tpr)
+paste0("Cutoff: ",(cutoffOptF1 = accmeas[which.max(accmeas$f1),]$cutoff))
+paste0("Precision: ",(precisionOptF1 = accmeas[which.max(accmeas$f1),]$precision))
+paste0("Recall: ",(recallOptF1 = accmeas[which.max(accmeas$f1),]$recall))
+paste0("FPR: ",(fprOpt = accmeas[which.max(accmeas$f1),]$fpr))
+paste0("TPR: ",(tprOpt = accmeas[which.max(accmeas$f1),]$tpr))
+paste0("Max F-score: ",(max_f1 = max(accmeas$f1, na.rm=TRUE)))
 
 # With the aggregation/averaging across models and threshold values
 
@@ -385,18 +517,20 @@ accmeas.mn <- accmeas %>%
 
 # Calculate optimum threshold based on F1 statistic
 
-cutoffOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$cutoff
-precisionOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$precision
-recallOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$recall
-fprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$fprMn
-tprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$tprMn
-max_f1 <- max(accmeas.mn$f1, na.rm = TRUE)
+print("~~~~~Model averages and maximum F-score~~~~~")
+
+(cutoffOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$cutoff)
+(precisionOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$precision)
+(recallOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$recall)
+(fprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$fprMn)
+(tprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$tprMn)
+(max_f1Mn <- max(accmeas.mn$f1, na.rm = TRUE))
 
 ```
 
 ```{r}
 # F1 based
-print("F1-based accuracy metrics:")
+print("F1-based accuracy metrics")
 paste0("F1 Score: ",(f1Opt = accmeas.mn[which.max(accmeas.mn$f1),]$f1))
 paste0("Overall Accuracy: ",(oaOpt = accmeas.mn[which.max(accmeas.mn$f1),]$accuracy))
 paste0("Precision: ",(precOpt = accmeas.mn[which.max(accmeas.mn$f1),]$precision))
@@ -405,7 +539,7 @@ paste0("Cutoff: ",(threshOpt = accmeas.mn[which.max(accmeas.mn$f1),]$cutoff))
 
 # Mathews Correlation Coefficient
 print("---------------------------")
-print("MCC-based accuracy metrics:")
+print("MCC-based accuracy metrics")
 paste0("MCC: ",(mccOpt = accmeas.mn[which.max(accmeas.mn$mcc),]$mcc))
 paste0("Overall Accuracy: ",(oaOptmcc = accmeas.mn[which.max(accmeas.mn$mcc),]$accuracy))
 paste0("Precision: ",(precOptmcc = accmeas.mn[which.max(accmeas.mn$mcc),]$precision))
@@ -419,12 +553,19 @@ Plot the model accuracy results for the optimum threshold.
 
 # Get the best F1 score for each model run
 accmeas.best <- accmeas %>% 
-  group_by(factor(model)) %>% top_n(1,f1) %>%
+  group_by(factor(model)) %>% 
+  top_n(1,f1) %>%
   ungroup() %>%
   mutate(model_iter = row_number())
 
 print(paste0("Cutoff: Mean = ",round(mean(accmeas.best$cutoff),3),"; Standard Deviation: ",round(sd(accmeas.best$cutoff),3)))
 print(paste0("F1 Score: Mean = ",round(mean(accmeas.best$f1),3),"; Standard Deviation: ",round(sd(accmeas.best$f1),3)))
+
+```
+
+Check on the optimum threshold by spatial block:
+
+```{r}
 
 ```
 
@@ -637,7 +778,7 @@ Clean up!
 ```{r}
 rm(list = ls.str(mode = 'numeric'))
 rm(accmeas,accmeas.best,accmeas.mn,accmeas.s,df.imp,
-   df.imp.p,f4,f4a,f4b,f6,ftr_imp,top)
+   df.imp.p,f4,f4a,f4b,f6,ftr_imp,top,labels_,cols)
 gc()
 ```
 
@@ -647,15 +788,87 @@ gc()
 
 ```{r}
 
+cols <- c("#4DAF4A", "#984EA3", "#FF7F00")
+flabs <- c(prec = "Precision", rec = "Recall", f1 = "F1-score")
+
+# Reshape the agreement table for plotting facet wrap
+
+# Southern Rockies (by block)
+ref.srme_m <- reshape2::melt(
+  ref.srme, id.vars = c("blocksize", "source", "region", "grid_id"), 
+  measure.vars = c("prec", "rec", "f1"), variable.name = "statistic"
+) %>%
+  na.omit()
+
+# WRNF as a whole
+ref.wrnf_m <- reshape2::melt(
+  ref.wrnf, id.vars = c("blocksize", "source", "region"), 
+  measure.vars = c("prec", "rec", "f1"), variable.name = "statistic"
+) %>%
+  na.omit()
+
+# Facet wrap plot of the statistics by block group
+
+f7 <- ggplot(data=ref.srme_m, aes(x=factor(blocksize), y=value, fill=factor(source))) +
+  geom_boxplot(position = position_dodge()) + 
+  scale_fill_manual(values=cols, labels=c("LANDFIRE EVT","USFS TreeMap","USFS ITSP"), name="Source: ") +
+  facet_wrap(~statistic, labeller = labeller(statistic = flabs)) +
+  theme_light(11) +
+  theme(legend.position = "top",
+        legend.box = "vertical",
+        legend.justification = c(0.5,0.5), # Left-aligns the legends
+        legend.spacing.y = unit(-10, "pt"), # Adjusts the gap between the legends
+        legend.text = ggtext::element_markdown(halign = 0), # This aligns each individual legend's text to the left
+        axis.title = element_text(size=12,face="italic"),
+        text = element_text(family = "Arial")) +
+  labs(x="Blocksize",y="Value")
+
+# Add the WRNF statistics
+f7 <- f7 +
+  # Plot the WRNF points on top as a different shape
+  geom_point(data=ref.wrnf_m, aes(x=factor(blocksize), y=value, shape=region), 
+             position = position_dodge(width = 0.75), size = 3, color="black") +
+  scale_shape_manual(name="Subregion", values=c("WRNF" = 8)) +
+  guides(
+    fill=guide_legend(override.aes=list(shape=NA)), # No shape in the fill legend
+    shape=guide_legend(title="Subregion", override.aes=list(color="black")) # Shape legend for Subregion
+  )
+
+f7
+
+# Add a spatial map of statistics by blocks
+blocks_ <- blocks %>%
+  left_join(ref.srme, by="grid_id") %>%
+  pivot_longer(cols = c(prec, rec, f1), names_to = "statistic", values_to = "value")
+
+ggplot(data = blocks_) +
+  geom_sf(aes(fill = value)) +
+  facet_grid(source ~ statistic) +
+  scale_fill_viridis_c(option = "C") + # Use a continuous color scale
+  theme_void() +
+  theme(
+    strip.text.x = element_text(size = 10),
+    legend.position = "bottom"
+  ) +
+  guides(fill = guide_colourbar(direction = "horizontal", barwidth = 10, barheight = 0.60,
+                                ticks=F, title.position = "left"),
+         label.theme = element_text(angle = 0, size = 9)) +
+  labs(fill="")
+
+```
+
+
+```{r}
+
 brewer.pal(n=5,"Set1")
 
 cols <- c("#4DAF4A", "#984EA3", "#FF7F00")
 
 glimpse(ref.global)
 
-# Get an average f1 score table
-f1mn <- ref.global %>%
-  group_by
+# # Get an average f1 score table
+# f1mn <- ref.global %>%
+#   group_by
 
 # Add a statistics column for legend (could do this for F1 too ...)
 ref.global.m <- reshape2::melt(
@@ -775,11 +988,26 @@ patch.long$source <- factor(patch.long$source,levels=c('Aspen10m', 'Aspen30m', '
 
 ```
 
-Grab some statistics on the patch size:
+Grab some summary statistics on the patch dynamics:
 
 ```{r}
-(a <- patch.long %>% filter(metric=="area_mn",source=="Aspen10m"))
-(b <- patch.long %>% filter(metric=="area_mn",source=="LFEVT"))
+
+a <- patch.long %>% filter(region=="SRME",metric=="area_mn",source=="Aspen10m")
+b <- patch.long %>% filter(region=="SRME",metric=="area_mn",source=="LFEVT")
+
+print("Difference in mean patch size for the SRME: ")
+((b$value-a$value)/b$value)*100
+
+a <- patch.long %>% filter(region=="WRNF",metric=="area_mn",source=="Aspen10m")
+b <- patch.long %>% filter(region=="WRNF",metric=="area_mn",source=="LFEVT")
+
+print("Difference in mean patch size for the WRNF: ")
+((b$value-a$value)/b$value)*100
+
+print("~~~~~~~~~~~~~~~~")
+
+print("Difference in mean patch size for the SRME: ")
+((b$value-a$value)/b$value)*100
 
 (c <- patch.long %>% filter(metric=="area_md",source=="Aspen10m"))
 (d <- patch.long %>% filter(metric=="area_md",source=="LFEVT"))
@@ -790,8 +1018,7 @@ paste0("LFEVT mean: ",b$value)
 paste0("Aspen10m median: ",c$value)
 paste0("LFEVT mean: ",d$value)
 
-print("Difference in mean area: ")
-((b$value-a$value)/b$value)*100
+
 
 print("Difference in median area: ")
 ((d$value-c$value)/d$value)*100
@@ -903,10 +1130,19 @@ The 10-m aspen classification identified Xx more patch than reference images:
 
 ```{r}
 
-print("% Difference in number of patches: ")
-a <- df %>% filter(metric=="Number of Patches",source=="Aspen10m")
-b <- df %>% filter(metric=="Number of Patches",source=="LFEVT")
+print("% Difference in number of patches across the Southern Rockies: ")
+a <- df %>% filter(region=="SRME",metric=="Number of Patches",source=="Aspen10m")
+b <- df %>% filter(region=="SRME",metric=="Number of Patches",source=="LFEVT")
 ((b$value-a$value)/b$value)*100
+
+print("% Difference in number of patches across the White River NF: ")
+a <- df %>% filter(region=="WRNF",metric=="Number of Patches",source=="Aspen10m")
+b <- df %>% filter(region=="WRNF",metric=="Number of Patches",source=="LFEVT")
+((b$value-a$value)/b$value)*100
+
+print("~~~~~~~~~~~~~")
+
+print("~~~~~~~~~~~~~")
 
 print("% Difference in patch density: ")
 a <- df %>% filter(metric=="Patch Density",source=="Aspen10m")

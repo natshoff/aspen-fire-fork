@@ -94,3 +94,46 @@ accmeas <- accmeas %>%
 write_csv(accmeas,"data/tabular/mod/results/accmeas_prop.csv")
 rm(list = ls())
 gc()
+
+
+#########################################################
+# Accuracy of the reference data (LFEVT, ITSP, TreeMap) #
+#########################################################
+
+print("Calculating accuracy from the reference datasets ...")
+
+ref.train <- read_csv('data/tabular/mod/results/reference/srme_skcv_mtry7/srme_ref_train_full_model_mtry7.csv')
+ref.test <- read_csv('data/tabular/mod/results/reference/srme_skcv_mtry7/srme_ref_test_full_model_mtry7.csv')
+
+glimpse(ref.test)
+
+# Train data
+ref.train.sum <- ref.train %>%
+  group_by(seed) %>%
+  summarize(
+    lfevt_acc = sum(lfevt)/sum(label) * 100,
+    itsp_acc = sum(itsp)/sum(label) * 100,
+    treemap_acc = sum(treemap)/sum(label) * 100)
+glimpse(ref.train.sum)
+mean(ref.train.sum$lfevt_acc)
+mean(ref.train.sum$itsp_acc)
+mean(ref.train.sum$treemap_acc)
+
+# Test data
+ref.test.sum <- ref.test %>%
+  group_by(seed) %>%
+  summarize(
+    lfevt_acc = sum(lfevt)/sum(label) * 100,
+    itsp_acc = sum(itsp)/sum(label) * 100,
+    treemap_acc = sum(treemap)/sum(label) * 100)
+glimpse(ref.test.sum)
+mean(ref.test.sum$lfevt_acc)
+mean(ref.test.sum$itsp_acc)
+mean(ref.test.sum$treemap_acc)
+
+
+#############################################
+# Accuracy of the independent validation data
+
+val <- read_csv()
+

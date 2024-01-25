@@ -27,16 +27,18 @@ proj <- st_crs("ESRI:102039")
 
 # DATA
 
-frp <- st_read('../../data/spatial/mod/VIIRS/fire_archive_SV-C2_srme_19to21_plots_w_attr.gpkg') %>%
+# Fire Radiative Power (FRP) observations (plots) w/ attributes from GEE
+frp <- st_read('../../data/spatial/mod/vnp14img_west_spatial_w_attr.gpkg') %>%
  # tidy the frame
- mutate(DAYNIGHT = as.factor(DAYNIGHT)) %>%
- rename(Aspen = Aspen_S2,
-        MixedConifer = Conifer_Hardwood) %>%
- filter(ACQ_YEAR <= 2020) %>%
+ mutate(daynight = as.factor(daynight),
+        acq_year = lubridate::year(acq_date),
+        aspen = if_else(aspen_pct > 0, 1, 0)) %>%
+ # Filter any missing FRP data and only for "nominal" or "high" confidence observations
+ filter(frp > 0,
+        confidence != "l") %>%
  # Convert back to centroid (points) and ensure correct project
- st_centroid() %>% st_transform(proj)
-mtbs <- st_read('../../data/spatial/mod/MTBS/mtbs_perims_srme_2019to2021_wAspen.gpkg')
-srme <- st_read('../../data/spatial/mod/boundaries/na_cec_eco_l3_srme.gpkg')
+ st_centroid() %>% 
+ st_transform(proj)
 
 gc() # garbage clean
 
@@ -46,13 +48,26 @@ gc() # garbage clean
 glimpse(frp)
 ```
 
-## Data exploration and figures
+Grab a dataframe with forested observations and with quantile breaks:
+
+```{r}
+brks <- classIntervals(frp$aspen_pct, style='headtails')
+brks <- brks$brks
+
+df <- frp %>% 
+ mutate(aspen_qnt = factor(cut(aspen_pct, breaks=brks)),
+        aspen_qnt = if_else(is.na(aspen_qnt), factor(0), aspen_qnt),
+        mtbs_id = factor(mtbs_id)) %>%
+ filter(lcms_mode == 1) # forested plots (1=Trees, 3=Shrub/Tree Mix, 4=Grass/Trees Mix, 5=Barren/Trees Mix)
+```
+
+# Data exploration and summary statistics
 
 Distribution of FRP Observations:
 
-```{r message=F, warning=F}
+```{r message=F, warning=F, fig.height=2.5, fig.width=6}
 
-p1 <- ggplot(data=frp, aes(x=FRP)) +
+p1 <- ggplot(data=frp, aes(x=frp)) +
   geom_histogram(bins=30)  +
   labs(y="Count",x="frp") +
   theme_minimal(5) +
@@ -66,74 +81,18 @@ p3 <- p1 +
   scale_x_continuous(trans="log10") +
   labs(x="log(frp)",y="")
 
-arr <- ggarrange(p1,p2,p3,nrow=1,ncol=3)
-arr
+(arr <- ggarrange(p1,p2,p3,nrow=1,ncol=3))
 
-ggsave(arr,file="../../figures/frp/frp_distributions.png",dpi=150)
+# ggsave(arr,file="../../figures/frp/west_frp_distributions.png",dpi=150)
 rm(p1,p2,p3,arr)
 
 ```
 
-Distribution of aspen percentage:
+Plot the day/night observations on a three month interval.
 
 ```{r message=F}
 
-df <- frp %>% 
- mutate(Aspen = if_else(Aspen == 0, 0.001, Aspen))
-p1 <- ggplot(data=df, aes(x=Aspen)) +
-  geom_histogram(bins=30)  +
-  labs(y="Count",x="Aspen % of Obs.") +
-  theme_minimal(5) +
-  theme(axis.text = element_text(size=7),
-        axis.text.x = element_text(size=5),
-        axis.text.y = element_text(size=5))
-p2 <- p1 +
-  scale_x_continuous(trans="sqrt") +
-  labs(x="sqrt(Aspen % of Obs.)",y="")
-p3 <- p1 +
-  scale_x_continuous(trans="log10") +
-  labs(x="log(Aspen % of Obs.)",y="")
-arr <- ggarrange(p1,p2,p3,nrow=1,ncol=3)
-arr
-
-ggsave(arr,file="../../figures/frp/frp_aspen_distributions.png",dpi=150)
-rm(p1,p2,p3,arr,df)
-
-```
-
-Get a count of observations by fire:
-
-```{r}
-groups <- frp %>% 
- filter(CONFIDENCE=='h') %>% # only take high confidence
- group_by(Event_ID) %>% 
- summarize(total_obs = n()) %>%
- ungroup() %>%
- filter(total_obs >= 10)
-
-frp <- frp %>% filter(Event_ID %in% groups$Event_ID)
-mtbs <- mtbs %>% filter(Event_ID %in% groups$Event_ID)
-
-rm(groups)
-```
-
-Spatial map of wildfires which burned through at least 5% aspen cover in the SRME (2019-2021):
-
-```{r warning=F}
-# Spatial map of wildfire perimeter which burned >= 5% aspen forest
-ggplot() +
- geom_sf(data=srme,fill=NA) +
- geom_sf(data=mtbs%>%st_centroid(), aes(size=BurnBndAc, color=BurnBndAc)) +
- viridis::scale_color_viridis(option="magma",trans="log10") +
- # geom_sf_text(data = mtbs%>%st_centroid(), aes(label = Incid_Name)) + 
- theme_void(12)
-```
-
-Observations of FRP:
-
-```{r message=F}
-
-p1 <- ggplot(data=frp, aes(x=cut(ACQ_DATE, breaks="1 month"), y=FRP, fill=factor(DAYNIGHT))) +
+p1 <- ggplot(data=frp, aes(x=cut(acq_date, breaks="3 month"), y=frp, fill=factor(daynight))) +
   geom_boxplot(outlier.size = 0.8) +
   scale_y_continuous(trans="log10") +
   scale_fill_manual(values=c("#ef8a62","#999999"), labels=c("Daytime Obs.","Nighttime Obs.")) +
@@ -143,54 +102,30 @@ p1 <- ggplot(data=frp, aes(x=cut(ACQ_DATE, breaks="1 month"), y=FRP, fill=factor
         legend.position = "top")
 p1
 
-ggsave(p1,file="../../figures/frp/frp_time-series_boxplot.png",dpi=150)
-
 rm(p1)
 
 ```
 
-Plotting aspen / no-aspen and frp across time:
+Plotting aspen / no-aspen and FRP across time:
 
 ```{r message=F}
 
-brks <- classIntervals(frp$Aspen, style='headtails')
-brks <- brks$brks
-
-df <- frp %>% 
- mutate(Aspen_qt = factor(cut(Aspen, breaks=brks)),
-        Aspen_qt = if_else(is.na(Aspen_qt), factor(0), Aspen_qt),
-        Conifer_qt = factor(cut(Conifer, quantile(Conifer), include.lowest=TRUE, labels=FALSE)),
-        ForestedPct = Conifer + Hardwood + MixedConifer,
-        AspenNoAspen = factor(if_else(Aspen > 10, 1, 0))) %>%
- filter(ForestedPct > 50)
-
 # Plots
 
-p1 <- ggplot(data=df, aes(x=cut(ACQ_DATE, breaks="2 week"), y=FRP, fill=AspenNoAspen)) +
-  geom_boxplot(outlier.size = 0.8) +
+p1 <- ggplot(data=df, aes(x=cut(acq_date, breaks="3 month"), y=frp, fill=factor(aspen))) +
+  geom_boxplot(outlier.size = 0.6) +
   scale_y_continuous(trans="log10") +
   scale_fill_manual(values=c("#999999","#238443"), labels=c("No Aspen","Aspen")) +
   labs(x="Acquisition Date", y="frp (gW)", fill="Aspen Presence:") +
-  facet_wrap(~DAYNIGHT, nrow=2) +
+  facet_wrap(~daynight, nrow=2) +
   theme_bw(10) +
   theme(axis.text.x = element_text(angle=35,hjust = 1),
         legend.position = "top")
 p1
 
-p2 <- ggplot(data=df, aes(x=factor(Incid_Name), y=FRP, fill=AspenNoAspen)) +
-  geom_boxplot(outlier.size = 0.8) +
-  scale_y_continuous(trans="log10") +
-  scale_fill_manual(values=c("#999999","#238443"), labels=c("No Aspen","Aspen")) +
-  labs(x="Incident", y="frp (gW)", fill="Aspen Presence:") +
-  facet_wrap(~DAYNIGHT, nrow=2) +
-  theme_bw(10) +
-  theme(axis.text.x = element_text(angle=35,hjust = 1),
-        legend.position = "top")
-p2
-
 # ggsave(p,file="../../figures/frp/frp_AspenNoAspen_boxplot.png",dpi=300)
  
-rm(p1,p2)
+rm(p1)
 
 ```
 
@@ -200,74 +135,57 @@ Produce the same plots but using the quantiles:
 
 cols <- c('#ffffcc','#c2e699','#78c679','#238443','#005824')
 
-p1 <- ggplot(data=df, aes(x=cut(ACQ_DATE, breaks="2 week"), y=FRP, fill=Aspen_qt)) +
-  geom_boxplot(outlier.size = 0.8) +
+p1 <- ggplot(data=df, aes(x=cut(acq_date, breaks="3 month"), y=frp, fill=aspen_qnt)) +
+  geom_boxplot(outlier.size = 0.6) +
   scale_y_continuous(trans="log10") +
   scale_fill_manual(values=cols, 
                     labels=c("None","(0-6.96)","(6.96-28.24)","(28.24-54.69)","(54.69-99.24)")) +
   labs(x="Acquisition Date", y="frp (gW)", fill="Aspen Component (%):") +
-  facet_wrap(~DAYNIGHT, nrow=2) +
+  facet_wrap(~daynight, nrow=2) +
   theme_bw(10) +
   theme(axis.text.x = element_text(angle=35,hjust = 1),
         legend.position = "top")
 p1
 
-p2 <- ggplot(data=df, aes(x=factor(Incid_Name), y=FRP, fill=Aspen_qt)) +
-  geom_boxplot(outlier.size = 0.8) +
-  scale_y_continuous(trans="log10") +
-  scale_fill_manual(values=cols, 
-                    labels=c("None","(0-6.96)","(6.96-28.24)","(28.24-54.69)","(54.69-99.24)")) +
-  labs(x="Incident", y="frp (gW)", fill="Aspen Component (%):") +
-  facet_wrap(~DAYNIGHT, nrow=2) +
-  theme_bw(10) +
-  theme(axis.text.x = element_text(angle=35,hjust = 1),
-        legend.position = "top")
-p2
+# ggsave(p1,file="../../figures/frp/FRP-Aspen_Quantile_byWeek.png",dpi=300)
 
-ggsave(p1,file="../../figures/frp/FRP-Aspen_Quantile_byWeek.png",dpi=300)
-ggsave(p2,file="../../figures/frp/FRP-Aspen_Quantile_byFire.png",dpi=300)
- 
-rm(p1,p2)
+rm(p1)
 ```
 
-Just the 2020 fires (for FBTB)
+Test the relationship with a GAM.
+
 
 ```{r}
-df_ <- df %>%
- filter(Incid_Name == "EAST TROUBLESOME") %>%
- filter(DAYNIGHT == "D")
-
-p <- ggplot(data=df_, aes(x=factor(Incid_Name), y=FRP, fill=Aspen_qt)) +
-  geom_boxplot(outlier.size = 0.8) +
-  scale_y_continuous(trans="log10") +
-  scale_fill_manual(values=cols, 
-                    labels=c("None","0-7%","7-28%","28-54%","54-99%")) +
-  labs(x="Incident", y="Fire Radiative Power (gW)", fill="Aspen\nComponent:") +
-  # facet_wrap(~DAYNIGHT, nrow=2) +
-  theme_bw(10) +
-  theme(axis.text.x = element_blank(),
-        axis.title.x = element_blank(),
-        legend.position = "right")
-p
 
 library(mgcv,quietly=T)
 library(tidymv,quietly=T)
 ctrl <- mgcv::gam.control(nthreads = 6) # use 6 parallel threads, reduce if fewer physical CPU cores
+
+df_ <- df %>% filter(pct_tree > 50)
+
 # Run a GAM
-gamfit1 <- 
-  mgcv::gam(log(FRP) ~ s(Aspen, k=15),
+gam.fit <- 
+  mgcv::gam(log(frp) ~ s(aspen_pct, k=15) + s(vpd_max) + s(slope),
   method="REML",
-  gamma=1.2,
   data=df_, 
   control=ctrl
 )
+
+summary(gam.fit)
+
 # Plot the smooths
-plot_smooths(gamfit1, Aspen) +
+plot_smooths(gam.fit, aspen_pct) +
  theme(legend.position = "right") +
  labs(x="Aspen %") +
  theme_bw(14)
 
-ggsave(p,file="../../figures/frp/FRP-Aspen_Quantile_byFire_co2020.png",dpi=300,width=3.5, height=3.75)
+plot_smooths(gam.fit, vpd_max) +
+ theme(legend.position = "right") +
+ labs(x="Max VPD") +
+ theme_bw(14)
+
+plot(gam.fit)
+
 ```
 
 Statistical tests for significance between groups / aspen percent more broadly:
@@ -275,11 +193,12 @@ Statistical tests for significance between groups / aspen percent more broadly:
 ```{r message=F, warning=F}
 # Summary stats
 table <- df %>%
- select(Aspen_qt, FRP) %>%
- st_set_geometry(NULL) %>% as_tibble() %>%
- group_by(Aspen_qt) %>%
- get_summary_stats(FRP, type = "mean_sd") %>%
- rename(Aspen_Pct = Aspen_qt,
+ select(aspen_qnt, frp) %>%
+ st_set_geometry(NULL) %>% 
+ as_tibble() %>%
+ group_by(aspen_qnt) %>%
+ get_summary_stats(frp, type = "mean_sd") %>%
+ rename(Aspen_Pct = aspen_qnt,
         N = n,
         Mean = mean,
         StDev = sd) %>%
@@ -299,15 +218,11 @@ rm(table)
 
 ```{r warning=F, message=F}
 # ANOVA test of significance
-aspen.anova <- anova(lm(log(FRP) ~ Aspen_qt, data = df))
+aspen.anova <- anova(lm(log(frp) ~ aspen_qnt, data = df))
 aspen.anova
-# gtsave(aspen.anova %>%
-#         gt() %>%
-#         tab_header(title = "Analysis of variance (ANOVA)"),
-#        "../../figures/frp/Table_FRP_AspenPct_Anova.png")
 
 # Run a GAM to get an estimate of the effects for each group
-glm.fit <- glm(log(FRP) ~ Aspen_qt, data = df)
+glm.fit <- glm(log(frp) ~ aspen_qnt, data = df)
 summary(glm.fit)
 sjPlot::tab_model(glm.fit)
 
@@ -321,13 +236,13 @@ p <- sjPlot::plot_model(glm.fit, show.values = TRUE, value.offset = .3) +
        axis.ticks.x = element_blank(),
        axis.text.y = element_text(angle=30,hjust = 1))
 p
-ggsave(p,file="../../figures/frp/FRP-Aspen_Quantile_GLM_estimates.png",dpi=120,height=5,width=4)
+# ggsave(p,file="../../figures/frp/FRP-Aspen_Quantile_GLM_estimates.png",dpi=120,height=5,width=4)
 rm(p,glm.fit,aspen.anov)
 ```
 
 ```{r message=F}
 
-p1 <- ggplot(data=df%>%filter(CONFIDENCE=='h'), aes(x=Aspen_qt, y=FRP, fill=DAYNIGHT)) +
+p1 <- ggplot(data=df%>%filter(confidence=='h'), aes(x=aspen_qnt, y=frp, fill=daynight)) +
  geom_boxplot(outlier.size = 0.8) +
  scale_y_continuous(trans="log10") +
  scale_fill_manual(values=c("#ef8a62","#999999"), labels=c("Daytime Obs.","Nighttime Obs.")) +
@@ -336,7 +251,7 @@ p1 <- ggplot(data=df%>%filter(CONFIDENCE=='h'), aes(x=Aspen_qt, y=FRP, fill=DAYN
  theme(legend.position = "top")
 p1
 
-ggsave(p1,file="../../figures/frp/FRP_Aspen_Breaks_boxplot.png",dpi=150)
+# ggsave(p1,file="../../figures/frp/FRP_Aspen_Breaks_boxplot.png",dpi=150)
 
 rm(p1)
 
