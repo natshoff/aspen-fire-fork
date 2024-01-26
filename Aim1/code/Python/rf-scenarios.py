@@ -23,7 +23,7 @@ import time
 begin = time.time()
 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, matthews_corrcoef
 
 
@@ -261,7 +261,8 @@ prob_preds.to_csv('data/tabular/mod/results/scenarios/rf_prob_preds_scenarios.cs
 # Metrics plots based on the default classification cutoff (0.50) #
 ###################################################################
 
-# Read in the SBKCV results
+# Read back in the SBKCV results
+results = pd.read_csv('data/tabular/mod/results/scenarios/rf_accmets_scenarios.csv')
 
 
 # Plot the results across folds using boxplots
@@ -312,27 +313,27 @@ median_f1 = results.groupby('Feature_Set')['F1'].mean()  # or median()
 print("Top models based on MCC:\n", median_mcc.sort_values(ascending=False))
 print("Top models based on F1:\n", median_f1.sort_values(ascending=False))
 
-best_model = results[results['Feature_Set'] == median_mcc.idxmax()]
+best_model_results = results[results['Feature_Set'] == median_f1.idxmax()]
+best_model_feat_imps = feat_imps[feat_imps['Feature_Set'] == median_f1.idmax()]
+best_model_probs = prob_preds[prob_preds['Feature_Set'] == median_f1.idmax()]
 
+# Plot the best model feature importances
+plt.figure(figsize=(12, 8))  # Adjust the figure size as needed
+sns.boxplot(data=best_model_feat_imps, x='Feature', y='Importance')
 
-######################################################################
-# Run a GridSearchCV for the best performing classification scenario #
-# Define the parameter grid
-param_grid = {
-    'n_estimators': [100, 200, 300],
-    'max_depth': [None, 10, 20, 30],
-    'min_samples_split': [2, 5, 10],
-    # Add other parameters here
-}
+plt.title(f"Feature Importances for Best Model")
+plt.xticks(rotation=45, ha='right')  # Rotate feature names for better readability
+plt.ylabel('Importance')
+plt.xlabel('Feature')
 
-# Initialize the RF classifier
-rf = RandomForestClassifier(random_state=42, class_weight="balanced")
-# Initialize GridSearchCV
-grid_search = GridSearchCV(estimator=rf, param_grid=param_grid, cv=10, scoring='accuracy')
-# Fit GridSearchCV
-grid_search.fit(X_train, y_train)
-# Best parameters
-print(grid_search.best_params_)
+plt.tight_layout()
+plt.show()
+
+# Write to file
+best_model_results.to_csv('data/tabular/mod/results/scenarios/rf_results_best_model.csv')
+best_model_feat_imps.to_csv('data/tabular/mod/results/scenarios/rf_feat_imps_best_model.csv')
+best_model_probs.to_csv('data/tabular/mod/results/scenarios/rf_prob_preds_best_model.csv')
+
 
 # ####################################################################################################
 # # Metrics plots based on moving cutoffs, incl. ROC & Prec-Rec curves for the best performing model #

@@ -1,6 +1,7 @@
 
 # Load the libraries and data
 library(tidyverse)
+library(sf)
 library(caret)
 library(randomForest)
 library(rfUtilities)
@@ -8,28 +9,30 @@ library(ggcorrplot)
 
 getwd()
 
-################################
-# Set up the parallel processing
-
-library(doSNOW)
-library(doParallel)
-
-# Set up the parallel compute
-cl = makeCluster(parallel::detectCores()-1, type = "SOCK")
-registerDoParallel(cl)
+# ################################
+# # Set up the parallel processing
+# 
+# library(doSNOW)
+# library(doParallel)
+# 
+# # Set up the parallel compute
+# cl = makeCluster(parallel::detectCores()-1, type = "SOCK")
+# registerDoParallel(cl)
 
 ###########################################
 # Prep the sampled presence/background data
 
-Pres <- read_csv('data/tabular/mod/training/sampled/presence_samples.csv') %>%
+Pres <- st_read('data/spatial/mod/training/sampled/presence/pi_points_srme_m500_sampled.gpkg') %>%
+  as_tibble() %>%
   mutate(label = 1)
-Bg <- read_csv('data/tabular/mod/training/sampled/background_samples.csv') %>%
+Bg <- read_csv('data/tabular/mod/training/background/bg_points_evt_sbcls_sampled.csv') %>%
+  as_tibble() %>%
   mutate(label = 0)
 
 # Merge and tidy
 pbl <- bind_rows(Pres,Bg) %>%
   mutate(PresAbs = as.factor(label)) %>%
-  dplyr::select(-c(mask,.geo,`system:index`,label,grid_id,latitude,longitude,n_sample))
+  dplyr::select(-c(EVT_SBCLS,EVT_SBCLS_,Block_ID,id,fid,label,geom))
 glimpse(pbl)
 
 # Clear up the memory
@@ -75,7 +78,7 @@ ggcorrplot(corr, method = "square",
 
 # Permutated test with leave out
 mvm = rfUtilities::multi.collinear(
-  X, perm=TRUE, leave.out=TRUE, n=1001, p=0.05
+  X, perm=TRUE, leave.out=TRUE, n=101, p=0.05
 )
 
 # Check where frequency > 0
@@ -83,25 +86,26 @@ mvm = rfUtilities::multi.collinear(
 
 # Grab a data frame with multicollinear variables removed
 df <- pbl[,-which(names(pbl) %in% mvm[mvm$frequency > 0,]$variables)]
+df <- df %>% na.omit()
 
 # Isolate the variables
 y <- df$PresAbs
-X <- df %>% dplyr::select(-PresAbs)
+X <- df %>% dplyr::select(-PresAbs) 
 
 # Clean up
-rm(mc,mvm,X_sc)
+rm(mc,mvm)
 
 
 ###########################
 # Parameterize the RF model
 
 # Tune the mtry parameter using randomForest
-bmtry <- tuneRF(X, y, mtryStart=2, stepFactor=1.5, improve=1e-5, ntreeTry=1001)
+bmtry <- tuneRF(X, y, mtryStart=2, stepFactor=1.5, improve=1e-5, ntreeTry=101)
 print(bmtry)
 
 # Grab the best mtry
 mtry <- data.frame(bmtry)
-mtry <- mtry[which.min(mtry$OOBError),]$mtry
+(mtry <- mtry[which.min(mtry$OOBError),]$mtry)
 
 rm(bmtry)
 
@@ -112,25 +116,32 @@ rf.model <- rfUtilities::rf.modelSel(
   x=X, 
   y=y, 
   imp.scale="mir", 
-  ntree=1001,
-  seed=1234
+  ntree=101,
+  seed=42
 )
 
 plot(rf.model) # plot the trees
 
 # Grab the optimal features
-sel.vars <- rf.model$selvars
+(sel.vars <- rf.model$selvars)
 
 
 ########################################################
 # Create train/test split accounting for class imbalance
 
-ind <- sample(2, nrow(df), replace = TRUE, prob = c(0.6, 0.4))
+ind <- sample(2, nrow(df), replace = TRUE, prob = c(0.7, 0.3))
 train <- df[ind==1,]
 test <- df[ind==2,]
 
-y <- train$PresAbs
-X <- train %>% dplyr::select(-PresAbs)
+y_train <- train$PresAbs
+y_train <- factor(y_train, levels = c(0, 1))
+X_train <- train %>% dplyr::select(-PresAbs)
+X_train <- train[,sel.vars]
+
+y_test <- test$PresAbs
+y_test <- factor(y_test, levels = c(0, 1))
+X_test <- test %>% dplyr::select(-PresAbs)
+X_test <- test[,sel.vars]
 
 # Free up space
 rm(
@@ -143,13 +154,11 @@ gc()
 
 # Now fit the random forest
 rf.fit <- randomForest(
-  y=y, 
-  x=X[,sel.vars], # optimized features 'sel.vars'
+  y=y_train, 
+  x=X_train[,sel.vars], # optimized features 'sel.vars'
   ntree=101, 
-  mtry=3, # from tuneRF
-  importance=TRUE,
-  proximity=TRUE,
-  do.trace=50
+  mtry=mtry, # from tuneRF
+  importance=TRUE
 )
 
 # Print/plot the summaries
@@ -165,13 +174,11 @@ hist(
 
 # Accuracy assessment
 
-# Prediction & Confusion Matrix - train data
-ptr <- predict(rf.fit, train[,sel.vars], type="response")
-confusionMatrix(ptr, as.factor(train$PresAbs))
-
 # Prediction & Confusion Matrix - test data
-pts <- predict(rf.fit, test[,sel.vars], type="response")
-confusionMatrix(pts, as.factor(test$PresAbs))
+preds <- predict(rf.fit, X_test, type="response")
+preds <- factor(preds, levels = levels(y_test))
+
+confusionMatrix(preds, as.factor(y_test))
 
 # Prepare the variable importance plot
 varimp <- data.frame(importance(rf.fit, scale=TRUE, type=1)) 
@@ -185,10 +192,10 @@ impPlot <- varimp %>%
   ggplot(aes(x = reorder(INDEX, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
   geom_bar(aes(fill=MeanDecreaseAccuracy),
            width=0.5, stat="identity", position = position_dodge(width=0.8)) +
-  scale_fill_gradientn(colors = viridis_pal(begin=0.2, end=0.85, option="rocket")(3)) +
+  scale_fill_gradientn(colors = viridis::viridis_pal(begin=0.2, end=0.85, option="rocket")(3)) +
   coord_flip() +
   labs(title = "Variable Importance",
-       subtitle = "Random Forests (N = 1001)",
+       subtitle = "Random Forests (NTree = 101)",
        x= "",
        y= "Mean Decrease in Accuracy",
        caption = "") +
@@ -202,7 +209,7 @@ save(rf.fit, file = "code/R/fits/rf_fit_opt.RData")
 # load("code/R/fits/rf_fit_opt.RData")
 
 # Save the feature importance plot
-ggsave(impPlot, file = "figures/srme_feature_selection_rf_varImp.png",
+ggsave(impPlot, file = "figures/rf-tuning_best_model_feat_imps.png",
        width=6.5, height=4.25, dpi = 300) # adjust dpi accordingly
 
 rm(rf.fit,test,train,ptr,pts,X,varimp,impPlot)

@@ -31,7 +31,7 @@ block_ids = list(blocks['grid_id'].unique())  # list of block ids
 
 # Generate the LF-EVT summaries by Block
 
-out_csv = os.path.join(os.getcwd(),'data/tabular/mod/training/lc16_evt_summary_by_block.csv')
+out_csv = os.path.join(os.getcwd(),'data/tabular/mod/training/background/lc16_evt_summary_by_block.csv')
 
 if not os.path.exists(out_csv):
     print("Creating the LF-EVT Data Frame")
@@ -282,12 +282,12 @@ print(sample_gdfs)
 
 # Get the unique classes and set a numeric class code for modelling
 classes = {code: idx+1 for idx, code in enumerate(sample_gdfs['EVT_SBCLS'].unique())}  # create numeric label
-sample_gdfs['EVT_SBCLS_CODE'] = sample_gdfs['EVT_SBCLS'].apply(lambda x: classes.get(x, x))
+sample_gdfs['SBCLS_CODE'] = sample_gdfs['EVT_SBCLS'].apply(lambda x: classes.get(x, x))
 
 out_file = os.path.join(os.getcwd(),'data/spatial/mod/training/points/background_samples_evt_sbcls.gpkg')
-sample_gdfs.to_file(out_file, driver='GPKG')
+sample_gdfs.to_file(out_file, driver="GPKG")
 
 final_counts = sample_gdfs['EVT_SBCLS'].value_counts()  # check the counts
 
 # Export a summary table
-final_counts.to_csv(os.path.join(os.getcwd(),'data/tabular/mod/training/background_samples_evt_sbcls.csv'))
+final_counts.to_csv(os.path.join(os.getcwd(),'data/tabular/mod/training/background_samples_evt_sbcls_counts.csv'))
