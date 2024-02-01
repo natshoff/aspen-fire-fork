@@ -1,11 +1,19 @@
 # Packages
 
-import os, glob
+import os, glob, sys
 import geopandas as gpd
 import rioxarray as rxr
 import rasterio
 import xarray as xr
-import threading
+import numpy as np
+import pandas as pd
+from osgeo import gdal
+
+# Bring in Johannes' accuracy scripts
+
+sys.path.append(
+    '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/earth-lab/opp-urban-fuels/local_accuracy-main')
+import accmeas
 
 
 # Functions
@@ -88,3 +96,86 @@ def reclassify_bin(img,to_img,geom,folder,proj4):
     out_file = os.path.basename(str(img))[:-4] + '_bin.tif'
 
     out_img_clip.rio.to_raster(os.path.join(folder, out_file))
+
+
+def blockmax(inarr, _blocksize_):
+    n = _blocksize_  # Height of window
+    m = _blocksize_  # Width of window
+    modulo = inarr.shape[0] % _blocksize_
+    if modulo > 0:
+        padby = _blocksize_ - modulo
+        inarr_pad = np.pad(inarr, ((0, padby), (0, 0)), mode='constant', constant_values=0)
+    else:
+        inarr_pad = inarr
+    modulo = inarr.shape[1] % _blocksize_
+    if modulo > 0:
+        padby = _blocksize_ - modulo
+        inarr_pad = np.pad(inarr_pad, ((0, 0), (0, padby)), mode='constant', constant_values=0)
+    k = int(inarr_pad.shape[0] / n)  # Must divide evenly
+    l = int(inarr_pad.shape[1] / m)  # Must divide evenly
+    inarr_pad_blockmax = inarr_pad.reshape(k, n, l, m).max(axis=(-1, -3))  # Numpy >= 1.7.1
+    return inarr_pad_blockmax
+
+
+def get_agreement(test_bin_path,ref_bin_path,
+                  block_df=None,zones_path=None):
+
+    # Open the test and ref binary arrays
+    test_bin_arr = gdal.Open(test_bin_path).ReadAsArray().flatten()
+    ref_bin_arr = gdal.Open(ref_bin_path).ReadAsArray().flatten()
+
+    print("Setting blank arrays ...")
+    tps = np.zeros(ref_bin_arr.shape)
+    fps = np.zeros(ref_bin_arr.shape)
+    tns = np.zeros(ref_bin_arr.shape)
+    fns = np.zeros(ref_bin_arr.shape)
+
+    print("Assigning confusion matrix ...")
+    tps[np.logical_and(ref_bin_arr == 1, test_bin_arr == 1)] = 1
+    fps[np.logical_and(ref_bin_arr == 0, test_bin_arr == 1)] = 1
+    tns[np.logical_and(ref_bin_arr == 0, test_bin_arr == 0)] = 1
+    fns[np.logical_and(ref_bin_arr == 1, test_bin_arr == 0)] = 1
+
+    print("Creating DataFrame ...")
+    acc_df = pd.DataFrame()
+    acc_df['tp'] = tps.astype(np.int8)
+    acc_df['fp'] = fps.astype(np.int8)
+    acc_df['tn'] = tns.astype(np.int8)
+    acc_df['fn'] = fns.astype(np.int8)
+
+    if zones_path is not None:
+        # Open the zones array
+        zone_arr = gdal.Open(zones_path).ReadAsArray().flatten()
+        # Gather some information
+        acc_df['block_id'] = zone_arr
+        acc_df = acc_df.dropna()
+
+        acc_df['block_id'] = acc_df['block_id'].apply(str)
+
+        print("Summarizing by spatial block ...")
+        aggr_cat_sum_df = acc_df.groupby('block_id')[['tp', 'fp', 'tn', 'fn']].sum().reset_index()
+        aggr_cat_sum_df = aggr_cat_sum_df[aggr_cat_sum_df['block_id'] != '-9999']
+
+        acc_df_out = calc_accmeas(aggr_cat_sum_df)
+
+        # Join to the RUCC table
+        block_df = block_df[['id','Block_ID']]
+        acc_df_out = pd.merge(acc_df_out, block_df, how='inner', on='id')
+        print(acc_df_out.head())
+
+        return acc_df_out
+
+    else:
+        acc_df = acc_df.dropna()
+        acc_df_out = calc_accmeas(acc_df)
+
+        return acc_df_out
+
+
+def calc_accmeas(df):
+
+    df['recall'] = df.apply(lambda row: accmeas.recall(row.tp, row.tn, row.fp, row.fn), axis=1)
+    df['precision'] = df.apply(lambda row: accmeas.precision(row.tp, row.tn, row.fp, row.fn), axis=1)
+    df['f1'] = df.apply(lambda row: accmeas.f1(row.tp, row.tn, row.fp, row.fn), axis=1)
+
+    return df

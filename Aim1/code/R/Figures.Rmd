@@ -1,38 +1,35 @@
 ---
 title: "Figures"
 output: html_notebook
+root.dir: '~/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire'
 ---
 
 ```{r include=F}
-knitr::opts_knit$set(root.dir = '~/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire')
 source('setup.R')
 ```
 
 ## STUDY AREA
 
-```{r fig.height=5, fig.width=3.5}
+```{r}
 ggplot() +
   geom_sf(data=srme) +
   geom_sf(data=wrnf, fill="darkgrey") +
   geom_sf(data=blocks, fill=NA, lwd=0.4) +
   coord_sf(crs="EPSG:32613") +
-  theme_bw(11)
+  theme_light(11)
 ```
 
-## Figure 1: Surface Reflectance / Spectral Response and Phenological Characteristics
+## Figure 1: Spectral Response and Phenological Characteristics
+
+Load the Sentinel-2 annual time-series (2019). 
 
 ```{r}
 
 # Spectral Response
-ts <- read_csv('../../data/tabular/mod/results/s2msi_l2a_aspen_TSy2019.csv', show_col_types = FALSE) %>% 
-  select(-c(id,.geo,TCB,TCG,TCW))
-
-# Join the observations to the spatial data and retrieve which block they relate to
-ref_sp <- st_read("../../data/spatial/mod/training/points/gee/pi_points_srme_m500_.shp") %>%
-  st_join(blocks) %>%
-  rename(block_id = id)
-
-ts <- ts %>% left_join(ref_sp%>%as_tibble()%>%select(uid,block_id), by="uid")
+ts <- read_csv('../../data/tabular/mod/results/s2msi_l2a_aspen_TSy2019.csv', 
+               show_col_types = FALSE) %>% 
+  select(-c(id,.geo,TCB,TCG,TCW)) %>%
+  rename(NDVI705 = NDRE)
 
 head(ts)
 
@@ -45,14 +42,14 @@ Tidy the time-series data.
 3. Generate mean/median/stdev of reflectance by image date,
 4. Calculate weekly summaries
 
-```{r fig.width=5, fig.height=3.5}
+```{r}
 
 # Filter out cloud-contaminated pixels based on the Cloud Score + values
 # Reference:  https://medium.com/google-earth/all-clear-with-cloud-score-bd6ee2e2235e
 
 tsp <- ts %>%
   filter(
-    cs >= 0.90, # >= 0.6 Cloud Score + contamination
+    cs >= 0.8, # >= Cloud Score + contamination
   ) %>%
   # add the month as a column
   mutate(month = month(image_date, label=TRUE, abbr=TRUE)) %>%
@@ -61,22 +58,24 @@ tsp <- ts %>%
 
 # Test using some visualizations
 
+# NDVI705 scatter plot with trend line
 tsp %>%
   group_by(image_date) %>%
-  summarize(band = median(NDRE)) %>%
+  summarize(band = median(NDVI705)) %>%
   ggplot(aes(x=image_date,y=band)) +
   geom_point(size=0.8) +
   geom_smooth(method="loess") +
   labs(x="Image Date", y="NDRE") +
   theme_bw(11)
 
-ggplot(data=tsp, aes(x=NDRE, y=month)) +
+# NDVI705 box plot
+ggplot(data=tsp, aes(x=NDVI705, y=month)) +
   geom_boxplot() +
   coord_flip() +
   labs(y="Image Date", x="NDRE") +
   theme_bw(11)
 
-# rm(ts)
+rm(ts)
 
 ```
 
@@ -86,11 +85,11 @@ Now pivot the table longer:
 
 tsp_ <- tsp %>%
   select(c(starts_with("B"),image_date,
-           SLAVI,NDRE,NDMI,ChlRE,IRECI,MCARI)) %>%
-  group_by(image_date, block_id) %>%
+           SLAVI,NDVI705,NDMI,ChlRE,IRECI,MCARI)) %>%
+  group_by(image_date) %>%
   summarize_all(list(median)) %>%
   pivot_longer(
-    cols = -c(image_date,block_id),
+    cols = -c(image_date),
     names_to="band",
     values_to="reflectance"
   ) %>%
@@ -101,27 +100,10 @@ tsp_ <- tsp %>%
     biweek = cut.Date(image_date, breaks="2 week", labels=FALSE)
   )
 
-# # Join back the phenology metrics
-# blocks_df <- blocks %>% 
-#   select(id,Greenup_1,MidGreenup_1,Maturity_1,Peak_1,MidGreendown_1,Dormancy_1) %>%
-#   rename(
-#     block_id = id,
-#     greenup = Greenup_1,
-#     midgreenup = MidGreenup_1,
-#     maturity = Maturity_1,
-#     peak = Peak_1,
-#     midgreendown = MidGreendown_1,
-#     dormancy = Dormancy_1
-#   )
-# 
-# tsp_ <- tsp_ %>% 
-#   left_join(blocks_df,by="block_id") %>%
-#   as_tibble() %>%
-#   select(-geom)
-# 
-# rm(blocks_df)
-
 head(tsp_, n=19)
+
+rm(tsp)
+gc()
 
 ```
 
@@ -131,7 +113,7 @@ Breakpoint analysis to identify significant shift in spectral signature througho
 
 # Isolate one of the vegetation indices (Normalized Difference Red-edge Index)
 df <- tsp_ %>% 
-  filter(band == "NDRE") %>% 
+  filter(band == "NDVI705") %>% 
   select(image_date,week,reflectance) %>%
   group_by(image_date,week) %>%
   summarize(reflectance = median(reflectance)) %>%
@@ -149,16 +131,10 @@ print("Breakpoint weeks:")
 bp.dates <- df$week[bp.ind]
 bp.dates
 
-# print("Phenology weeks across spatial blocks:")
-# print(paste0("Greenup = from week ",range(lubridate::week(tsp_$greenup))[1]," to ",range(lubridate::week(tsp_$greenup))[2]))
-# print(paste0("MidGreenup = from week ",range(lubridate::week(tsp_$midgreenup))[1]," to ",range(lubridate::week(tsp_$midgreenup))[2]))
-# print(paste0("Maturity = from week ",range(lubridate::week(tsp_$maturity))[1]," to ",range(lubridate::week(tsp_$maturity))[2]))
-# print(paste0("Peak = from week ",range(lubridate::week(tsp_$peak))[1]," to ",range(lubridate::week(tsp_$peak))[2]))
-# print(paste0("Mid Greendown = from week ",range(lubridate::week(tsp_$midgreendown))[1]," to ",range(lubridate::week(tsp_$midgreendown))[2]))
-# print(paste0("Dormancy = from week ",range(lubridate::week(tsp_$dormancy))[1]," to ",range(lubridate::week(tsp_$dormancy))[2]))
-
 # Plot the result
 plot(result)
+
+rm(df, df.ts, result, bp.ind, bp.dates)
 
 ```
 
@@ -209,11 +185,11 @@ ggplot(breakpoint_data, aes(x = breakpoint_date, y = block_id, group = block_id)
 Plot of median daily observations:
 
 ```{r fig.height=5, fig.width=9}
+
 # Reorder band factors
 tsp_$band <- factor(tsp_$band, 
-                   levels = c("B2","B3","B4","B5","B6",
-                              "B7","B8","B8A","B11","B12",
-                              "ChlRE","IRECI","NDMI","NDRE","SLAVI","MCARI"))
+                   levels = c("B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12",
+                              "ChlRE","IRECI","NDMI","NDVI705","SLAVI","MCARI"))
 
 tsp_ %>%
   filter(str_detect(band,"B")) %>%
@@ -282,7 +258,7 @@ f3a <- tsp_ %>%
         axis.text = element_text(size=10),
         legend.text = element_text(size=8),
         legend.title = element_text(size=8),
-        legend.position = c(0.2,0.85),
+        legend.position = c(0.2,0.95),
         legend.direction = "horizontal",
         legend.background = element_rect(fill="white", color="black"),
         plot.margin = unit(c(1.2,0.5,1.2,0.5), 'lines'),
@@ -303,27 +279,38 @@ Figure 1B: Time-series charts of the spectral indices:
 
 # All bands
 
+# Calculate the maximum reflectance for each band
+max_refl_band <- tsp_ %>%
+  group_by(band) %>%
+  summarize(max_refl = max(reflectance))
+
+# Now create your plot
 tsp_ %>%
-  group_by(band,week) %>%
-  summarize(refl = mean(reflectance)) %>%
-  ggplot(aes(x=week, y=refl, group=1)) +
+  group_by(band, week) %>%
+  summarize(refl = mean(reflectance), .groups = 'drop') %>%
+  ggplot(aes(x = week, y = refl, group = 1)) +
   geom_line() +
-  annotate('rect', xmin=start_summer, xmax=end_summer, ymin=0, ymax=6000, alpha=.3, fill='gray') +
-  annotate('rect', xmin=start_autumn, xmax=end_autumn, ymin=0, ymax=6000, alpha=.3, fill='gray') +
-  geom_vline(xintercept=start_summer, linetype="dotted", lwd=0.8) +
-  geom_vline(xintercept=end_summer, linetype="dotted", lwd=0.8) +
-  geom_vline(xintercept=start_autumn, linetype="dotted", lwd=0.8) +
-  geom_vline(xintercept=end_autumn, linetype="dotted", lwd=0.8) +
-  facet_wrap(. ~ band, scales = "free") +
+  geom_rect(data = max_refl_band, aes(xmin=start_summer, xmax=end_summer, ymin=0, ymax=max_refl), alpha=.3, fill='gray',
+            inherit.aes = FALSE) +
+  geom_rect(data = max_refl_band, aes(xmin=start_autumn, xmax=end_autumn, ymin=0, ymax=max_refl), alpha=.3, fill='gray',
+            inherit.aes = FALSE) +
+  geom_vline(xintercept = start_summer, linetype = "dotted", lwd = 0.8) +
+  geom_vline(xintercept = end_summer, linetype = "dotted", lwd = 0.8) +
+  geom_vline(xintercept = start_autumn, linetype = "dotted", lwd = 0.8) +
+  geom_vline(xintercept = end_autumn, linetype = "dotted", lwd = 0.8) +
+  facet_wrap(. ~ band, scales = "free_y") +
   theme_minimal() +
-  theme(axis.title.y = element_text(size=8,face="italic",
-                                    margin = unit(c(0,0.4,0,0), "cm")),
-        axis.title.x = element_text(size=8,face="italic",
-                                    margin = unit(c(0.4,0,0,0), "cm")),
-        axis.text = element_text(size=7),
+  theme(axis.title.y = element_text(size = 8, face = "italic",
+                                    margin = unit(c(0, 0.4, 0, 0), "cm")),
+        axis.title.x = element_text(size = 8, face = "italic",
+                                    margin = unit(c(0.4, 0, 0, 0), "cm")),
+        axis.text = element_text(size = 7),
         strip.text.x = element_text(size = 8))
 
 # Spectral indices
+
+max_refl_band_vi <- max_refl_band %>%
+  filter(!str_detect(band,"B"))
 
 f3b <- tsp_ %>%
   filter(!str_detect(band,"B")) %>%
@@ -331,9 +318,11 @@ f3b <- tsp_ %>%
   summarize(refl = mean(reflectance)) %>%
   ggplot(aes(x=week, y=refl, group=1)) +
   geom_line(linewidth=0.6) +
-  labs(x="Acquisition Week",y="Reflectance") +
-  annotate('rect', xmin=start_summer, xmax=end_summer, ymin=0, ymax=6000, alpha=.3, fill='gray') +
-  annotate('rect', xmin=start_autumn, xmax=end_autumn, ymin=0, ymax=6000, alpha=.3, fill='gray') +
+  labs(x="Acquisition Week",y="") +
+  geom_rect(data = max_refl_band_vi, aes(xmin = start_summer, xmax = end_summer, ymin = 0, ymax = max_refl), alpha = .3, fill = 'gray',
+            inherit.aes = FALSE) +
+  geom_rect(data = max_refl_band_vi, aes(xmin = start_autumn, xmax = end_autumn, ymin = 0, ymax = max_refl), alpha = .3, fill = 'gray',
+            inherit.aes = FALSE) +
   geom_vline(xintercept=start_summer, linetype="dotted", lwd=0.8) +
   geom_vline(xintercept=end_summer, linetype="dotted", lwd=0.8) +
   geom_vline(xintercept=start_autumn, linetype="dotted", lwd=0.8) +
@@ -350,17 +339,13 @@ f3b <- tsp_ %>%
         text = element_text(family = "Arial"))
 f3b
 
+rm(max_refl_band,max_refl_band_vi)
+
 ```
 
 Figure 3C: Boxplot of seasonal composites:
 
 ```{r}
-
-# Reorder band factors
-tsp_$band <- factor(tsp_$band, 
-                   levels = c("B2","B3","B4","B5","B6",
-                              "B7","B8","B8A","B11","B12",
-                              "ChlRE","IRECI","NDMI","NDRE","SLAVI","MCARI"))
 
 cols <- c(
   "Summer" = "#87CEEB", 
@@ -379,8 +364,8 @@ f3c <- seasonal %>%
   ggplot(aes(x=band,y=reflectance,fill=season)) +
   geom_boxplot(outlier.size = 0.5, outlier.color = "grey30") +
   scale_fill_manual(values = cols) +
-  theme_bw(16) +
-  labs(x="Sentinel-2 MSI Band",y="Reflectance") +
+  theme_bw(12) +
+  labs(x="Sentinel-2 MSI Band",y="Reflectance",fill="Season: ") +
   theme(axis.title.y = element_text(size=11,face="italic",
                                     margin = unit(c(0,0.4,0,0), "cm")),
         axis.title.x = element_text(size=11,face="italic",
@@ -403,8 +388,8 @@ f3d <- seasonal %>%
   geom_boxplot(aes(fill=season)) +
   scale_fill_manual(values = cols) +
   facet_wrap(. ~ band, scales = "free") +
-  theme_bw(14) +
-  labs(fill="Season",y="Value") +
+  theme_bw(12) +
+  labs(fill="Season",y="") +
   theme(axis.text.x = element_blank(),
         axis.ticks.x = element_blank(),
         axis.title.y = element_text(size=11,face="italic",
@@ -413,9 +398,12 @@ f3d <- seasonal %>%
                                     margin = unit(c(0.4,0,0,0), "cm")),
         axis.text = element_text(size=10),
         strip.text.x = element_text(size = 11),
-        legend.position = c(0.85,0.2),
-        legend.title = element_text(size=16),
-        legend.text = element_text(size=15),
+        # legend.position = c(0.85,0.2),
+        legend.position = "bottom",
+        legend.title = element_text(size=12),
+        legend.text = element_text(size=12),
+        legend.spacing.y = unit(1.5, "cm"),
+        legend.spacing.x = unit(0.5, 'cm'),
         plot.margin = unit(c(1.2,0.5,1.2,0.5), 'lines'),
         text = element_text(family = "Arial"))
 f3d
@@ -424,11 +412,11 @@ f3d
 
 Combine the plots:
 
-```{r fig.width=14, fig.height=8, message=F}
+```{r fig.width=14, fig.height=8, message=F, warning=F}
 
 # Arrange in a multi-panel plot
 
-f3 <- ggarrange(f3a,f3b,f3c,f3d, nrow=2,ncol=2,widths=c(1, 0.75), labels = c("A", "B", "C", "D"))
+f3 <- ggarrange(f3a,f3b,f3c,f3d, nrow=2,ncol=2, widths=c(1, 0.75), labels = c("A", "B", "C", "D"))
 f3
 
 # Save it out
@@ -455,7 +443,7 @@ ggsave(f3_, file = "../../figures/Figure3_SpectralResponse_v2.png",
 Clean up the time-series / spectral response data:
 
 ```{r}
-rm(f3,f3_,f3a,f3b,f3c,f3d,seasonal,tsp,band_colors,cols,end_autumn,end_summer,start_autumn,start_summer)
+rm(f3,f3a,f3b,f3c,f3d,seasonal,band_colors,cols,end_autumn,end_summer,start_autumn,start_summer,tsp_)
 gc()
 ```
 
@@ -463,7 +451,7 @@ gc()
 
 Best Performing Model:
 
-Plot the AUC-PR and AUC-ROC.
+Load the accuracy metrics for the TEST data:
 
 ```{r}
 glimpse(accmeas)
@@ -505,8 +493,6 @@ accmeas.mn <- accmeas %>%
     recallSd = sd(recall,na.rm=T),
     f1 = mean(f1,na.rm=T), # F1 score (mean)
     f1Sd = sd(f1,na.rm=T),
-    gmean = mean(gmean,na.rm=T), # Geometric Mean (mean)
-    gmeanSd = sd(gmean,na.rm=T),
     mcc = mean(mcc,na.rm=T), # Matthew's Correlation Coefficient (mean)
     mccSd = sd(mcc,na.rm=T),
     accuracy = mean(accuracy,na.rm=T), # Overall accuracy (mean)
@@ -697,17 +683,23 @@ glimpse(ftr_imp)
 #   select(-total)
 # glimpse(df.imp)
 
+# # Tidy the data frame
+# df.imp <- ftr_imp %>% 
+#   select(-c(.geo,`system:index`)) %>%
+#   rename(model = seed) %>%
+#   mutate(model = as.factor(model)) %>%
+#   # Summarize across to grab the relative importance
+#   group_by(model) %>%
+#   mutate(total = sum(across(B11_autumn:slope))) %>%
+#   mutate(across(B11_autumn:slope, ~ . / total)) %>%
+#   ungroup() %>%
+#   select(-total)
+
 # Tidy the data frame
 df.imp <- ftr_imp %>% 
   select(-c(.geo,`system:index`)) %>%
   rename(model = seed) %>%
-  mutate(model = as.factor(model)) %>%
-  # Summarize across to grab the relative importance
-  group_by(model) %>%
-  mutate(total = sum(across(B11_autumn:VV_winter_ent))) %>%
-  mutate(across(B11_autumn:VV_winter_ent, ~ . / total)) %>%
-  ungroup() %>%
-  select(-total)
+  mutate(model = as.factor(model))
 
 ```
 
@@ -719,8 +711,7 @@ df.imp.p <- df.imp %>%
   rename(importance = value,
          band = name) %>%
   mutate(season = if_else(str_detect(band,"_autumn"), "Autumn Spectral", "Summer Spectral"),
-         season = if_else(str_detect(band,"VV_winter"), "Winter SAR", season),
-         season = if_else(str_detect(band,"VH_winter"), "Winter SAR", season),
+         season = if_else(str_detect(band,"_winter"), "Winter SAR", season),
          season = if_else(str_detect(band,"VV_summer"), "Summer SAR", season),
          season = if_else(str_detect(band,"VH_summer"), "Summer SAR", season))
 glimpse(df.imp.p)

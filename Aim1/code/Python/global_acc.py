@@ -8,8 +8,6 @@ maxwell.cook@colorado.edu
 
 # Packages
 import os,sys,time
-import numpy as np
-import pandas as pd
 
 # Custom functions
 sys.path.append(os.path.join(os.getcwd(),'code/Python/'))
@@ -19,8 +17,11 @@ begin = time.time()
 
 # Globals
 
+proj = 'EPSG:5070'
+
 projdir = os.path.join(os.getcwd(),'data/spatial/mod/')
 
+# Define the two regions
 rois = ['srme','wrnf']
 
 # Target grid (resampled 10-meter map using maximum resampling)
@@ -33,30 +34,45 @@ tests = [
 refs = [
     os.path.join(projdir,'reference/lc16_evt_200_bin_srme_10m.tif'),
     os.path.join(projdir,'reference/lc16_evt_200_bin_wrnf_10m.tif'),
-    os.path.join(projdir,'reference/usfs_treemap16_bin_srme_10m.tif'),
-    os.path.join(projdir,'reference/usfs_treemap16_bin_wrnf_10m.tif'),
+    os.path.join(projdir,'reference/usfs_treemap16_balive_int_bin_srme_10m.tif'),
+    os.path.join(projdir,'reference/usfs_treemap16_balive_int_bin_wrnf_10m.tif'),
     os.path.join(projdir,'reference/usfs_itsp_aspen_ba_gt10_srme_10m.tif'),
     os.path.join(projdir,'reference/usfs_itsp_aspen_ba_gt10_wrnf_10m.tif')
 ]
 
+# Load the rasterized spatial grid
+blocks_img_path = os.path.join(projdir,'reference/spatial_block_grid_50km2_match.tif')
+blocks_img = rxr.open_rasterio(blocks_img_path,masked=True,cache=False).squeeze()
+blocks_arr = blocks_img.values.astype(np.uint16)
+del blocks_img
+
+
+#####################################
+# Confirm raster grids are matching #
+#####################################
+
 # Loop through ROIs
 for i in range(len(rois)):
-
     roi = rois[i]
+    print(roi)
 
-    test_file_paths = [test for test in tests if str(roi)+".tif" in test]
-    print(test_file_paths[0])
-    test = rxr.open_rasterio(test_file_paths[0], cache=False).squeeze()
+    # Sentinel-based map
+    test_file_paths = [test for test in tests if str(roi) + ".tif" in test]
+    print(os.path.basename(test_file_paths[0]))
 
-    ref_file_paths = [ref for ref in refs if str(roi)+"_10m.tif" in ref]
-    print(ref_file_paths)
+    # Reference images
+    test = rxr.open_rasterio(test_file_paths[0], cache=False).squeeze().fillna(0)
+    print(test.shape)
+
+    ref_file_paths = [ref for ref in refs if str(roi) + "_10m.tif" in ref]
+    ref_file_paths.append(blocks_img_path)  # also test the spatial blocks
+    print([os.path.basename(ref) for ref in ref_file_paths])
 
     # Check that they match with the aspen surfaces
-
     for ref in ref_file_paths:
         print(os.path.basename(ref))
 
-        ref_ = rxr.open_rasterio(ref_file_paths[0], cache=False).squeeze()
+        ref_ = rxr.open_rasterio(ref, cache=False).squeeze()
 
         if test.rio.resolution() == ref_.rio.resolution() and \
                 test.rio.bounds() == ref_.rio.bounds() and \
@@ -68,7 +84,6 @@ for i in range(len(rois)):
 
         else:
             print("Mismatch between ref and test ...")
-
             print(f"Shape of test: {test.shape}\nBounds of ref: {ref_.shape}")
             print(f"Resolution of test: {test.rio.resolution()}\nResolution of ref: {ref_.rio.resolution()}")
             print(f"Bounds of test: {test.rio.bounds()}\nBounds of ref: {ref_.rio.bounds()}")
@@ -82,118 +97,153 @@ for i in range(len(rois)):
             out_path = ref[:-4]+".tif"
             print(out_path)
             img_match.rio.to_raster(
-                out_path, tiled=True, lock=threading.Lock(), windowed=True,
-                compress='zstd', zstd_level=9, num_threads='all_cpus',
+                out_path, compress='zstd', zstd_level=9,
                 dtype='uint16', driver='GTiff'
             )
 
             del img, img_match
 
-    del test, ref
+        del ref
+
+    del test
 
 
-###########
-# Workflow
-###########
+################################################
+# Workflow to calculate the confusion matrices #
+################################################
 
-def blockmax(inarr, blocksize):
-    n = blocksize  # Height of window
-    m = blocksize  # Width of window
-    modulo = inarr.shape[0] % blocksize
-    if modulo > 0:
-        padby = blocksize - modulo
-        inarr_pad = np.pad(inarr, ((0, padby), (0, 0)), mode='constant', constant_values=0)
-    else:
-        inarr_pad = inarr
-    modulo = inarr.shape[1] % blocksize
-    if modulo > 0:
-        padby = blocksize - modulo
-        inarr_pad = np.pad(inarr_pad, ((0, 0), (0, padby)), mode='constant', constant_values=0)
-    k = int(inarr_pad.shape[0] / n)  # Must divide evenly
-    l = int(inarr_pad.shape[1] / m)  # Must divide evenly
-    inarr_pad_blockmax = inarr_pad.reshape(k, n, l, m).max(axis=(-1, -3))  # Numpy >= 1.7.1
-    return inarr_pad_blockmax
-
-
+# Loop regions, perform the analysis
 for roi in rois:
 
     print(f"Starting for {roi}")
 
-    # Load the test image
-    test_path = [test for test in tests if str(roi)+".tif" in test]
-    print(test_path[0])
+    # Load the test image paths for the region
+    test_path = [test for test in tests if str(roi) + ".tif" in test][0]
+    print(os.path.basename(test_path[0]))
+    # Load the reference image paths
+    ref_paths = [ref for ref in refs if str(roi) + "_10m.tif" in ref]
+    print([os.path.basename(ref) for ref in ref_paths])
 
-    file_paths = [ref for ref in refs if str(roi)+"_10m.tif" in ref]
-    print(file_paths)
+    # Open the Sentinel-based map
+    test_img = rxr.open_rasterio(test_path,masked=True,cache=False).squeeze().fillna(0)
+    test_arr = test_img.values.astype(np.uint16)
+
+    del test_img  # clear up space
 
     # Loop through reference images
     out_refs = []
-    for ref_tif in file_paths:
+    for ref_tif in ref_paths:
 
-        test_arr = rxr.open_rasterio(test_path[0], masked=True, cache=False).squeeze().values.astype(np.uint16)
-
-        name = os.path.basename(ref_tif)[:-4]
+        # Open the reference image
+        ref_img = rxr.open_rasterio(ref_tif, masked=True, cache=False).squeeze()
+        name = os.path.basename(ref_tif)[:-4]  # name of the reference dataset
         print(name)
 
         blocksizes = [1, 3]  # block sizes (in pixel) used as analytical units.
 
+        # Convert to arrays
+        ref_arr = ref_img.values.astype(np.uint16)
+
+        del ref_img  # clean up
+
+        # Check what region (if Southern Rockies, include Block_ID)
         outdata = []
         for blocksize in blocksizes:
-
-            ref_arr = rxr.open_rasterio(ref_tif, masked=True, cache=False).squeeze().values.astype(np.uint16)
-
             if blocksize > 1:
                 arr_ref_res = blockmax(ref_arr, blocksize)
                 arr_test_res = blockmax(test_arr, blocksize)
+                arr_block_res = blockmax(blocks_arr, blocksize)
             else:
                 arr_ref_res = ref_arr
                 arr_test_res = test_arr
-
-            # Free up some space
-            del ref_arr
+                arr_block_res = blocks_arr
 
             # Print the shapes for debugging
             print(
-                f"Blocksize {blocksize}: Reference - {arr_ref_res.shape}, Test - {arr_test_res.shape}")
-
-            print("Creating data frame")
+                f"Blocksize {blocksize}: "
+                f"Reference - {arr_ref_res.shape}, "
+                f"Test - {arr_test_res.shape}, "
+                f"Blocks - {arr_block_res.shape}")
 
             # Check if the reshaped arrays have the same shape
             if arr_ref_res.shape != arr_test_res.shape:
                 raise ValueError(
-                    f"Reference and test arrays have different shapes: {arr_ref_res.shape} vs {arr_test_res.shape}")
+                    f"Reference and test arrays have different shapes: "
+                    f"{arr_ref_res.shape} vs {arr_test_res.shape}")
+            elif arr_block_res != arr_ref_res:
+                raise ValueError(
+                    f"Reference and block arrays have different shapes: "
+                    f"{arr_block_res.shape} vs {arr_ref_res.shape}")
 
-            currdf = pd.DataFrame({
-                'ref': arr_ref_res.flatten(),
-                'test': arr_test_res.flatten()
-            })
+            print("Creating data frame ...")
+
+            if roi == 'srme':
+                currdf = pd.DataFrame({
+                    'block': blocks_arr.flatten(),  # if SRME, add the blocks
+                    'ref': arr_ref_res.flatten(),
+                    'test': arr_test_res.flatten()
+                }).query('ref != 0 or test != 0')
+
+                # Calculate confusion matrix by Block_ID
+                currdf = currdf.groupby('block').apply(lambda x: pd.Series({
+                    'tp': ((x['ref'] == 1) & (x['test'] == 1)).sum(),
+                    'fp': ((x['ref'] == 0) & (x['test'] == 1)).sum(),
+                    'fn': ((x['ref'] == 1) & (x['test'] == 0)).sum()
+                })).reset_index()
+
+                currdf['blocksize'] = blocksize
+                outdata.append(currdf)
+
+                del currdf, arr_ref_res, arr_test_res
+
+            else:
+                currdf = pd.DataFrame({
+                    'ref': arr_ref_res.flatten(),
+                    'test': arr_test_res.flatten()
+                }).query('ref != 0 or test != 0')
+
+                # Calculate tp, fp, fn directly
+                tp = (currdf['ref'] == 1) & (currdf['test'] == 1).sum()
+                fp = (currdf['ref'] == 0) & (currdf['test'] == 1).sum()
+                fn = (currdf['ref'] == 1) & (currdf['test'] == 0).sum()
+
+                # Create a new DataFrame to store these values
+                currdf = pd.DataFrame([{
+                    'tp': tp,
+                    'fp': fp,
+                    'fn': fn,
+                    'blocksize': blocksize
+                }])
+
+                outdata.append(currdf)
+
+                del currdf, tp, fp, fn, arr_ref_res, arr_test_res
 
             # Free up some more space
             del arr_ref_res, arr_test_res
 
-            currdf = currdf[-np.logical_and(currdf.ref == 0, currdf.test == 0)]
-            tp = len(currdf[np.logical_and(currdf.ref == 1, currdf.test == 1)])
-            fp = len(currdf[np.logical_and(currdf.ref == 0, currdf.test == 1)])
-            fn = len(currdf[np.logical_and(currdf.ref == 1, currdf.test == 0)])
-            print(blocksize, tp, fp, fn)
-            outdata.append([blocksize, tp, fp, fn])
+        del test_arr, ref_arr, ref_img
 
-        del test_arr
-
-        outdatadf = pd.DataFrame(outdata, columns=['blocksize', 'tp', 'fp', 'fn'])
-        outdatadf['prec'] = outdatadf.tp / (outdatadf.tp + outdatadf.fp).astype(np.float64)
-        outdatadf['rec'] = outdatadf.tp / (outdatadf.tp + outdatadf.fn).astype(np.float64)
+        outdatadf = pd.concat(outdata)
+        outdatadf = calc_accmeas(outdatadf)
         outdatadf['source'] = name
+
+        # Save the results to a CSV
         outdatadf.to_csv(
             os.path.join(
-                os.getcwd(),f'data/tabular/mod/results/accmeas/global_accmeas_multi_blocks_{name}.csv'),index=False)
+                os.getcwd(), f'data/tabular/mod/results/accmeas/global_accmeas_multi_blocks_{name}.csv'),
+            index=False)
         out_refs.append(outdatadf)
-        outdata = []
+
+        del outdata, outdatadf
 
     # Bind the results together for plotting
     outdfs = pd.concat(out_refs).reset_index(drop=True)
-    outdfs.to_csv(os.path.join(os.getcwd(),f'data/tabular/mod/results/global_accmeas_multi_blocks_full_{roi}.csv'),
-                  index=False)
+    outdfs.to_csv(
+        os.path.join(os.getcwd(),f'data/tabular/mod/results/global_accmeas_multi_blocks_full_{roi}.csv'),
+        index=False)
+
+    del test_img, outdfs
 
 print("Complete!")
 

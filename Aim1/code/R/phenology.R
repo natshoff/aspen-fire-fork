@@ -118,7 +118,7 @@ ggplot(phenology.l, aes(x=factor(year), y=doy, fill=metric)) +
         legend.position = "top")
 
 # Relationship with elevation
-ggplot(data=phenology.l, aes(x=doy,y=elevation_mn,color=metric)) +
+ggplot(data=phenology.l, aes(x=elevation_mn,y=doy,color=metric)) +
   geom_point(size=1.2) +
   theme_light(12)
 
@@ -127,12 +127,11 @@ phenology_by_year <- phenology %>%
   select(year, starts_with('doy_')) %>%
   group_by(year) %>%
   summarize_all(., ~ as.integer(mean(., na.rm = TRUE)))
-
 glimpse(phenology_by_year)
 
 print("Metric averages across blocks and years: ")
 summary(phenology_by_year)
 
-# Grab the 2019 summary
+# Grab the 2019 summary across all blocks
 summary(phenology%>%filter(year==2019))
 
