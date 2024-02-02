@@ -137,11 +137,11 @@ blocks.to_file('data/spatial/mod/boundaries/spatial_block_grid_50km2_count.gpkg'
 # Calculate the number of background samples per block for the three levels
 # Proportionally stratified (area) and related to the number of presence points in the block
 
-blocks_f = blocks[blocks['n_presence'] >= 100].copy()  # at least 100 presence samples in the block
+blocks_f = blocks[blocks['n_presence'] >= 10].copy()  # at least 100 presence samples in the block
 blocks_f['n_background'] = blocks_f['n_presence'] * 10  # ten times the number of presence samples (10:1 ratio)
 
 # Remove blocks with < 100 presence samples
-background_f = background[background['n_presence'] >= 100].copy()
+background_f = background[background['n_presence'] >= 10].copy()
 # Calculate the number of background samples, keep it to a 10:1 ratio for moderate class imbalance
 background_f['n_background'] = background_f['n_presence'] * 10  # ten times the number of presence samples (10:1 ratio)
 background_f['n_background'] = background_f['n_background'].astype(int)

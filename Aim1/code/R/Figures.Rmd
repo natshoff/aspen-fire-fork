@@ -773,7 +773,7 @@ rm(accmeas,accmeas.best,accmeas.mn,accmeas.s,df.imp,
 gc()
 ```
 
-## Figures 7, 8 - Case Study: Landscape Patch Dynamics
+## Figures 7, 8 - Spatial Agreement and Landscape Patch Dynamics
 
 # Figure 7: Spatial Agreement
 
@@ -785,22 +785,22 @@ flabs <- c(prec = "Precision", rec = "Recall", f1 = "F1-score")
 # Reshape the agreement table for plotting facet wrap
 
 # Southern Rockies (by block)
-ref.srme_m <- reshape2::melt(
-  ref.srme, id.vars = c("blocksize", "source", "region", "grid_id"), 
-  measure.vars = c("prec", "rec", "f1"), variable.name = "statistic"
+aggr.sr.m <- reshape2::melt(
+  aggr.sr, id.vars = c("blocksize", "source", "region", "block"), 
+  measure.vars = c("precision", "recall", "f1"), variable.name = "statistic"
 ) %>%
   na.omit()
 
 # WRNF as a whole
-ref.wrnf_m <- reshape2::melt(
-  ref.wrnf, id.vars = c("blocksize", "source", "region"), 
-  measure.vars = c("prec", "rec", "f1"), variable.name = "statistic"
+aggr.wr.m <- reshape2::melt(
+  aggr.wr, id.vars = c("blocksize", "source", "region"), 
+  measure.vars = c("precision", "recall", "f1"), variable.name = "statistic"
 ) %>%
   na.omit()
 
 # Facet wrap plot of the statistics by block group
 
-f7 <- ggplot(data=ref.srme_m, aes(x=factor(blocksize), y=value, fill=factor(source))) +
+f7 <- ggplot(data=aggr.sr.m, aes(x=factor(blocksize), y=value, fill=factor(source))) +
   geom_boxplot(position = position_dodge()) + 
   scale_fill_manual(values=cols, labels=c("LANDFIRE EVT","USFS TreeMap","USFS ITSP"), name="Source: ") +
   facet_wrap(~statistic, labeller = labeller(statistic = flabs)) +
@@ -813,18 +813,17 @@ f7 <- ggplot(data=ref.srme_m, aes(x=factor(blocksize), y=value, fill=factor(sour
         axis.title = element_text(size=12,face="italic"),
         text = element_text(family = "Arial")) +
   labs(x="Blocksize",y="Value")
-
+f7
 # Add the WRNF statistics
 f7 <- f7 +
   # Plot the WRNF points on top as a different shape
-  geom_point(data=ref.wrnf_m, aes(x=factor(blocksize), y=value, shape=region), 
+  geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value, shape=region), 
              position = position_dodge(width = 0.75), size = 3, color="black") +
-  scale_shape_manual(name="Subregion", values=c("WRNF" = 8)) +
+  scale_shape_manual(name="Subregion", values=c("White River NF" = 8)) +
   guides(
     fill=guide_legend(override.aes=list(shape=NA)), # No shape in the fill legend
     shape=guide_legend(title="Subregion", override.aes=list(color="black")) # Shape legend for Subregion
   )
-
 f7
 
 # Add a spatial map of statistics by blocks

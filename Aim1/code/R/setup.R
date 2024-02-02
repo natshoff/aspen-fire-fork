@@ -38,6 +38,7 @@ accmeas <- read_csv('data/tabular/mod/results/best_model/southern_rockies_accmea
 ftr_imp <- read_csv('data/tabular/mod/results/best_model/southern_rockies_feature_imps.csv',
                     show_col_types = FALSE)
 
+
 # # Landscape Patch Analysis
 # 
 # # Test data (Sentinel-based aspen map)
@@ -98,81 +99,35 @@ ftr_imp <- read_csv('data/tabular/mod/results/best_model/southern_rockies_featur
 # )
 # 
 # 
-# # Agreement assessment
-# 
-# # Global
-# 
-# aggr_dir <- 'data/tabular/mod/agreement/'
-# file_list.srme <- list.files(path = aggr_dir, pattern = "\\_srme.csv$", full.names = TRUE)
-# file_list.wrnf <- list.files(path = aggr_dir, pattern = "\\_wrnf.csv$", full.names = TRUE)
-# 
-# # Read and merge the CSV files for each region
-# ref.srme <- lapply(file_list.srme, read.csv) %>%
-#   bind_rows() %>%
-#   mutate(
-#     region = "SRME",
-#     source = if_else(source=="lc16_evt_200_bin_srme_10m", "LANDFIRE EVT", source),
-#     source = if_else(source=="usfs_itsp_aspen_ba_gt10_srme_10m", "USFS ITSP", source),
-#     source = if_else(source=="usfs_treemap16_bin_srme_10m", "USFS TreeMap", source),
-#     # Calculate the precision & recall
-#     prec = tp / (tp + fp),
-#     rec = tp / (tp + fn),
-#     # Calculate the F1 Score
-#     f1 = 2 * (prec * rec) / (prec + rec)
-#   )
-# 
-# ref.wrnf <- lapply(file_list.wrnf, read.csv) %>%
-#   bind_rows() %>%
-#   mutate(
-#     region = "WRNF",
-#     source = if_else(source=="lc16_evt_200_bin_wrnf_10m", "LANDFIRE EVT", source),
-#     source = if_else(source=="usfs_itsp_aspen_ba_gt10_wrnf_10m", "USFS ITSP", source),
-#     source = if_else(source=="usfs_treemap16_bin_wrnf_10m", "USFS TreeMap", source),
-#     # Calculate the precision & recall
-#     prec = tp / (tp + fp),
-#     rec = tp / (tp + fn),
-#     # Calculate the F1 Score
-#     f1 = 2 * (prec * rec) / (prec + rec)
-#   )
+# Agreement assessment
 
+# Global
 
+aggr_dir <- 'data/tabular/mod/results/agreement'
+file_list.srme <- list.files(path = aggr_dir, pattern = "\\srme_10m.csv$", full.names = TRUE)
+file_list.wrnf <- list.files(path = aggr_dir, pattern = "\\wrnf_10m.csv$", full.names = TRUE)
 
+# Read and merge the CSV files for each region
 
-# ref.global <- bind_rows(ref.srme,ref.wrnf) %>%
-#   mutate(
-#     source = if_else(source=="lc16_evt_srme_aspen_r01_utm_match_wrnf", "LFEVT", source),
-#     source = if_else(source=="treemap16_spcd_746_int_match_wrnf", "TreeMap", source),
-#     source = if_else(source=="itsp_aspen_srme_r1__match_wrnf", "ITSP", source),
-#     source = if_else(source=="lc16_evt_srme_aspen_r01_utm_match_srme", "LFEVT", source),
-#     source = if_else(source=="treemap16_spcd_746_int_match_srme", "TreeMap", source),
-#     source = if_else(source=="itsp_aspen_srme_r1__match_srme", "ITSP", source),
-#     # Calculate the F1 Score
-#     f1 = 2 * (prec * rec) / (prec + rec)
-#   )
-# glimpse(ref.global)
-# rm(ref.srme,ref.wrnf)
+aggr.sr <- read_csv('data/tabular/mod/results/agreement/global_accmeas_multi_blocks_full_srme.csv') %>%
+  rename(f1 = fi) %>%
+  mutate(
+    region = "Southern Rockies",
+    source = if_else(source=="lc16_evt_200_bin_srme_10m", "LANDFIRE EVT", source),
+    source = if_else(source=="usfs_itsp_aspen_ba_gt10_srme_10m", "USFS ITSP", source),
+    source = if_else(source=="usfs_treemap16_bin_srme_10m", "USFS TreeMap", source))
+glimpse(aggr.sr)
 
+# White River NF
+aggr.wr <- read_csv('data/tabular/mod/results/agreement/global_accmeas_multi_blocks_full_wrnf.csv') %>%
+  mutate(
+    region = "White River NF",
+    source = if_else(source=="lc16_evt_200_bin_wrnf_10m", "LANDFIRE EVT", source),
+    source = if_else(source=="usfs_itsp_aspen_ba_gt10_wrnf_10m", "USFS ITSP", source),
+    source = if_else(source=="usfs_treemap16_bin_wrnf_10m", "USFS TreeMap", source),
+    # Calculate the F1 Score
+    f1 = 2 * (prec * rec) / (prec + rec)) %>%
+  rename(precision = prec,
+         recall = rec)
+glimpse(aggr.wr)
 
-# # Focal
- 
-# lf.focal.srme <- read_csv('data/tabular/mod/results/focal_accmeas_multi_blocks_lc16_evt_srme_aspen_r01_utm_match_srme.csv') %>%
-#   mutate(region = "SRME")
-# lf.focal.wrnf <- read_csv('data/tabular/mod/results/focal_accmeas_multi_blocks_lc16_evt_srme_aspen_r01_utm_match_wrnf.csv') %>%
-#   mutate(region = "WRNF")
-# 
-# itsp.focal.srme <- read_csv('data/tabular/mod/results/focal_accmeas_multi_blocks_itsp_aspen_srme_r1__match_srme.csv') %>%
-#   mutate(region = "SRME")
-# itsp.focal.wrnf <- read_csv('data/tabular/mod/results/focal_accmeas_multi_blocks_itsp_aspen_srme_r1__match_wrnf.csv') %>%
-#   mutate(region = "WRNF")
-# 
-# treemap.focal.srme <- read_csv('data/tabular/mod/results/focal_accmeas_multi_blocks_treemap16_spcd_746_int_match_wrnf.csv') %>%
-#   mutate(region = "SRME")
-# treemap.focal.wrnf <- read_csv('data/tabular/mod/results/focal_accmeas_multi_blocks_treemap16_spcd_746_int_match_wrnf.csv') %>%
-#   mutate(region = "WRNF")
-# 
-# # Bind them together
-# ref.focal <- bind_rows(lf.focal.srme,lf.focal.wrnf,itsp.focal.srme,itsp.focal.wrnf,treemap.focal.srme,treemap.focal.wrnf)
-# glimpse(ref.focal)
-# 
-# # Clean up
-# rm(lf.focal.srme,lf.focal.wrnf,itsp.focal.srme,itsp.focal.wrnf,treemap.focal.srme,treemap.focal.wrnf)
