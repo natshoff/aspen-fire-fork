@@ -3,21 +3,11 @@
 
 library(tidyverse)
 
-# DATA
+# Laod the data (testing parts from model folds)
 
-# trainPart <- 'data/tabular/mod/results/best_model/southern_rockies_train_probs.csv'
 # testPart <- 'data/tabular/mod/results/best_model/southern_rockies_test_probs.csv'
 
-trainPart <- "data/tabular/mod/results/prop/southern_rockies_train_probs.csv"
-testPart <- "data/tabular/mod/results/prop/southern_rockies_test_probs.csv"
-
-# Sampled training (probabilities)
-train <- read_csv(trainPart) %>%
-  rename(gee_id = `system:index`,
-         TrueLabel = label) %>%
-  dplyr::select(-.geo) %>%
-  mutate(probability = probability*0.001) # scale back
-glimpse(train)
+testPart <- "data/tabular/mod/results/best_model/southern_rockies_test_probs_n55.csv"
 
 # Sampled testing (probabilities)
 test <- read_csv(testPart) %>%
@@ -28,7 +18,8 @@ test <- read_csv(testPart) %>%
 glimpse(test)
 
 
-# Calculate the accuracy metrics
+##################################
+# Calculate the accuracy metrics #
 
 models <- unique(test$seed)
 
@@ -82,7 +73,7 @@ for(model in models){
 accmeas <- bind_rows(ls)
 glimpse(accmeas)
 
-# Calculate accuracy metrics
+# Calculate additional metrics (precision, recall, and F1)
 accmeas <- accmeas %>%
   mutate(
     model = factor(model),
@@ -98,7 +89,7 @@ glimpse(accmeas)
 write_csv(accmeas,"data/tabular/mod/results/best_model/southern_rockies_accmeas.csv")
 
 # Clean up
-rm(abs,df,ls,pres,test,test.part,train,vec.list)
+rm(abs,df,ls,pres,test,test.part,vec.list)
 gc()
 
 
@@ -166,22 +157,6 @@ write_csv(opt_thresh,'data/tabular/mod/results/best_model/southern_rockies_opt_t
 # Accuracy of the reference data (LFEVT, ITSP, TreeMap) #
 #########################################################
 
-# For each reference set
-refs = c('lfevt','itsp','treemap')
-
-# Get the optimal cutoff (mean based on F1 across folds)
-opt_cutoff <- mean(opt_thresh$cutoff_f1)
-
-# Reload the test data,
-# Assign the classification label based on the optimum cutoff
-testData <- read_csv(testPart) %>%
-  rename(gee_id = `system:index`,
-         TrueLabel = label) %>%
-  dplyr::select(-.geo) %>%
-  mutate(probability = probability*0.001, # scale back
-         ClassLabel = if_else(probability >= opt_cutoff, 1, 0)) 
-glimpse(testData)
-
 # Function to calculate accuracy and F1 score
 calculate_metrics <- function(df, true_label, pred_label) {
   tp <- sum((df[[true_label]] == 1) & (df[[pred_label]] == 1))
@@ -197,13 +172,27 @@ calculate_metrics <- function(df, true_label, pred_label) {
   return(list(accuracy = accuracy, f1_score = f1_score))
 }
 
+# For each reference set
+refs = c('lfevt','itsp','treemap')
+# Get the optimal cutoff (mean based on F1 across folds)
+opt_cutoff <- mean(opt_thresh$cutoff_f1)
+
+# Reload the test data,
+# Assign the classification label based on the optimum cutoff
+testData <- read_csv(testPart) %>%
+  rename(gee_id = `system:index`,
+         TrueLabel = label) %>%
+  dplyr::select(-.geo) %>%
+  mutate(probability = probability*0.001, # scale back
+         ClassLabel = if_else(probability >= opt_cutoff, 1, 0)) 
+glimpse(testData)
+
 # First, get the overall F1/MCC for the classification
 overall_metrics <- calculate_metrics(testData, "TrueLabel", "ClassLabel")
 print(overall_metrics)
 
 # Initialize data frame to store results
 ref_results_df <- data.frame(reference = character(), metric = character(), value = numeric())
-
 # Apply the function to each reference column and to TrueLabel
 for (ref in c(refs, 'TrueLabel')) {
   # Compare to predicted ClassLabel

@@ -25,18 +25,40 @@ if(!require(pracma)) {
 
 setwd('~/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim1')
 
+#############
+# Functions #
+#############
+
+# Function to calculate accuracy and F1 score
+calculate_metrics <- function(df, true_label, pred_label) {
+  tp <- sum((df[[true_label]] == 1) & (df[[pred_label]] == 1))
+  tn <- sum((df[[true_label]] == 0) & (df[[pred_label]] == 0))
+  fp <- sum((df[[true_label]] == 0) & (df[[pred_label]] == 1))
+  fn <- sum((df[[true_label]] == 1) & (df[[pred_label]] == 0))
+  
+  accuracy <- (tp + tn) / (tp + tn + fp + fn)
+  precision <- tp / (tp + fp)
+  recall <- tp / (tp + fn)
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  return(list(accuracy = accuracy, f1_score = f1_score))
+}
+
+
+########
+# Data #
+########
+
 # Spatial data
 srme <- st_read("data/spatial/raw/boundaries/us_eco_l3_srme.gpkg")
 wrnf <- st_read("data/spatial/raw/boundaries/wrnf_boundary.gpkg")
-blocks <- st_read("data/spatial/mod/boundaries/spatial_block_grid_50km2.gpkg")
+blocks <- st_read("data/spatial/mod/boundaries/spatial_block_grid_50km2_count_s2.gpkg")
+
+
+#######################################################
+# Load the data from th best performing (final) model #
 
 # Accuracy Metrics
-accmeas <- read_csv('data/tabular/mod/results/best_model/southern_rockies_accmeas.csv',
-                    show_col_types = FALSE)
-
-# Feature Importance
-ftr_imp <- read_csv('data/tabular/mod/results/best_model/southern_rockies_feature_imps.csv',
-                    show_col_types = FALSE)
 
 
 # # Landscape Patch Analysis

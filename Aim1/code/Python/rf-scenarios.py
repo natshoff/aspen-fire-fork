@@ -77,38 +77,46 @@ len(pbl[pbl.PresAbs == 1]) / len(pbl[pbl.PresAbs == 0])
 # Set up the different classification scenarios
 
 # Summer radar
-sc1 = pbl[['PresAbs','Block_ID','VV_summer','VH_summer']]
+sc1 = pbl[['PresAbs','Block_ID','VV_summer','VH_summer',
+           'elevation','slope','aspect']]
 sc2 = pbl[['PresAbs','Block_ID','VV_summer','VH_summer',
            'VH_summer_contrast','VH_summer_corr','VH_summer_ent','VH_summer_var',
-           'VV_summer_contrast','VV_summer_corr', 'VV_summer_ent', 'VV_summer_var']]
+           'VV_summer_contrast','VV_summer_corr', 'VV_summer_ent', 'VV_summer_var',
+           'elevation','slope','aspect']]
 # Winter radar
 sc3 = pbl[['PresAbs','Block_ID','VV_winter','VH_winter']]
 sc4 = pbl[['PresAbs','Block_ID','VV_winter','VH_winter',
            'VH_winter_contrast', 'VH_winter_corr','VH_winter_ent', 'VH_winter_var',
-           'VV_winter_contrast', 'VV_winter_corr', 'VV_winter_ent','VV_winter_var']]
+           'VV_winter_contrast', 'VV_winter_corr', 'VV_winter_ent','VV_winter_var',
+           'elevation','slope','aspect']]
 # Winter+Summer combined
 sc5 = pbl[['PresAbs','Block_ID','VV_summer','VH_summer','VV_winter','VH_winter',
            'VH_summer_contrast', 'VH_summer_corr', 'VH_summer_ent', 'VH_summer_var',
            'VV_summer_contrast', 'VV_summer_corr', 'VV_summer_ent', 'VV_summer_var',
            'VH_winter_contrast', 'VH_winter_corr','VH_winter_ent', 'VH_winter_var',
-           'VV_winter_contrast', 'VV_winter_corr', 'VV_winter_ent','VV_winter_var']]
+           'VV_winter_contrast', 'VV_winter_corr', 'VV_winter_ent','VV_winter_var',
+           'elevation','slope','aspect']]
 
 
 # Summer spectral
 sc6 = pbl[['PresAbs','Block_ID','B2_summer','B3_summer','B4_summer','B5_summer','B6_summer',
-           'B7_summer','B8A_summer','B8_summer','B11_summer','B12_summer']]
+           'B7_summer','B8A_summer','B8_summer','B11_summer','B12_summer',
+           'elevation','slope','aspect']]
 sc7 = pbl[['PresAbs','Block_ID','B2_summer','B3_summer','B4_summer','B5_summer','B6_summer',
            'B7_summer','B8A_summer','B8_summer','B11_summer','B12_summer',
            'CIRE_summer','IRECI_summer','MCARI_summer','MNDWI_summer',
-           'NDVI705_summer','SLAVI_summer']]
+           'NDVI705_summer','SLAVI_summer',
+           'elevation','slope','aspect']]
 
 # Autumn spectral
 sc8 = pbl[['PresAbs','Block_ID','B2_autumn','B3_autumn','B4_autumn','B5_autumn','B6_autumn',
-           'B7_autumn','B8A_autumn','B8_autumn','B11_autumn','B12_autumn']]
+           'B7_autumn','B8A_autumn','B8_autumn','B11_autumn','B12_autumn',
+           'elevation','slope','aspect']]
 sc9 = pbl[['PresAbs','Block_ID','B2_autumn','B3_autumn','B4_autumn','B5_autumn','B6_autumn',
            'B7_autumn','B8A_autumn','B8_autumn','B11_autumn','B12_autumn',
            'CIRE_autumn','IRECI_autumn','MCARI_autumn','MNDWI_autumn',
-           'NDVI705_autumn','SLAVI_autumn']]
+           'NDVI705_autumn','SLAVI_autumn',
+           'elevation','slope','aspect']]
 
 # Summer+Autumn Spectral
 sc10 = pbl[['PresAbs','Block_ID','B2_summer','B3_summer','B4_summer','B5_summer','B6_summer',
@@ -117,7 +125,8 @@ sc10 = pbl[['PresAbs','Block_ID','B2_summer','B3_summer','B4_summer','B5_summer'
             'B2_autumn', 'B3_autumn', 'B4_autumn', 'B5_autumn', 'B6_autumn',
             'B7_autumn', 'B8A_autumn', 'B8_autumn', 'B11_autumn', 'B12_autumn',
             'CIRE_autumn', 'IRECI_autumn', 'MCARI_autumn', 'MNDWI_autumn',
-            'NDVI705_autumn', 'SLAVI_autumn']]
+            'NDVI705_autumn', 'SLAVI_autumn',
+            'elevation','slope','aspect']]
 
 
 # Set up a dictionary to hold the classification scenarios

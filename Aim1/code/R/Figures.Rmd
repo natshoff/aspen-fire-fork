@@ -8,7 +8,7 @@ root.dir: '~/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire'
 source('setup.R')
 ```
 
-## STUDY AREA
+# Study Region
 
 ```{r}
 ggplot() +
@@ -19,7 +19,7 @@ ggplot() +
   theme_light(11)
 ```
 
-## Figure 1: Spectral Response and Phenological Characteristics
+# Spectral Response and Phenological Characteristics
 
 Load the Sentinel-2 annual time-series (2019). 
 
@@ -207,17 +207,17 @@ tsp_ %>%
         legend.title = element_text(size=11))
 ```
 
-# Figure 3: Spectral Response of Aspen Forest Presence Data
+## Figure 3: Spectral Response of Aspen Forest Presence Data
 
 Gather the seasonal composite start and end dates:
 
 ```{r}
 # Summer
-(start_summer <- week(as.Date("2019-06-06")))
-(end_summer <- week(as.Date("2019-08-25")))
+(start_summer <- week(as.Date("2019-05-25")))
+(end_summer <- week(as.Date("2019-08-13")))
 # Autumn
-(start_autumn <- week(as.Date("2019-09-27")))
-(end_autumn <- week(as.Date("2019-11-01")))
+(start_autumn <- week(as.Date("2019-09-02")))
+(end_autumn <- week(as.Date("2019-11-14")))
 ```
 
 Generate the weekly median reflectance.
@@ -273,7 +273,7 @@ f3a <- tsp_ %>%
 f3a
 ```
 
-Figure 1B: Time-series charts of the spectral indices:
+## Figure 1B: Time-series charts of the spectral indices:
 
 ```{r message=F, warning=F}
 
@@ -343,7 +343,7 @@ rm(max_refl_band,max_refl_band_vi)
 
 ```
 
-Figure 3C: Boxplot of seasonal composites:
+## Figure 3C: Boxplot of seasonal composites:
 
 ```{r}
 
@@ -378,7 +378,7 @@ f3c
 
 ```
 
-Figure 1D: Seasonal differences in the spectral indices
+## Figure 1D: Seasonal differences in the spectral indices
 
 ```{r}
 
@@ -412,7 +412,7 @@ f3d
 
 Combine the plots:
 
-```{r fig.width=14, fig.height=8, message=F, warning=F}
+```{r fig.width=7.5, fig.height=10, message=F, warning=F}
 
 # Arrange in a multi-panel plot
 
@@ -447,132 +447,194 @@ rm(f3,f3a,f3b,f3c,f3d,seasonal,band_colors,cols,end_autumn,end_summer,start_autu
 gc()
 ```
 
-## Figure 4: Model accuracy and feature importance plot
+# Model Selection and Accuracy Assessment
 
-Best Performing Model:
-
-Load the accuracy metrics for the TEST data:
+Load the accuracy assessment results for the best performing model (the final model in GEE). This represents the most parsimonious model (multicollinear bands removed and feature selection in rfUtilities). See the "accmeas.R" script.
 
 ```{r}
+accmeas <- read_csv('../../data/tabular/mod/results/best_model/southern_rockies_accmeas.csv',
+                    show_col_types = FALSE)
+opt_thresh <- read_csv('../../data/tabular/mod/results/best_model/southern_rockies_opt_thresh.csv',
+                    show_col_types = FALSE)
+
 glimpse(accmeas)
+head(opt_thresh)
 ```
 
-Calculate the model averages using the optimum cutoff value:
+## Figure 4AB. Classification Scenarios
 
-```{r}
-# Without taking the average
+```{r fig.width=6.5, fig.height=3.5}
 
-print("~~~~~Total (not averageing) based on maximum F1~~~~~")
+scenarios <- read_csv("../../data/tabular/mod/results/scenarios/rf_accmets_scenarios.csv", show_col_types = FALSE)
 
-paste0("Cutoff: ",(cutoffOptF1 = accmeas[which.max(accmeas$f1),]$cutoff))
-paste0("Precision: ",(precisionOptF1 = accmeas[which.max(accmeas$f1),]$precision))
-paste0("Recall: ",(recallOptF1 = accmeas[which.max(accmeas$f1),]$recall))
-paste0("FPR: ",(fprOpt = accmeas[which.max(accmeas$f1),]$fpr))
-paste0("TPR: ",(tprOpt = accmeas[which.max(accmeas$f1),]$tpr))
-paste0("Max F-score: ",(max_f1 = max(accmeas$f1, na.rm=TRUE)))
+# Read in the best performing model results to append
+final_model <- opt_thresh %>%
+  mutate(Feature_Set = "Final_Model") %>%
+  rename(F1 = f1) %>%
+  select(Feature_Set,F1)
 
-# With the aggregation/averaging across models and threshold values
+scenarios <- bind_rows(scenarios,final_model)
+head(scenarios)
 
-# Calculate the averages for each cutoff value across model runs
+ggplot(data=scenarios, aes(x=reorder(Feature_Set,F1),y=F1)) +
+  geom_boxplot(outlier.size=0.6, fill="lightblue") +
+  ylim(0,1) +
+  labs(x="Classification Scenario",y="F1-score", tag="A") +
+  theme_bw(10) +
+  theme(
+        plot.margin = unit(c(0.2,0.2,0.2,0.2), 'lines'),
+        axis.title.y = element_text(size=10,face="italic",
+                                    margin = unit(c(0,0.4,0,0), "cm")),
+        axis.title.x = element_text(size=10,face="italic",
+                                    margin = unit(c(0.4,0,0,0), "cm")),
+        axis.text = element_text(size=9),
+        strip.text.x = element_text(size = 10),
+        axis.text.x = element_text(angle = 45, hjust=1),
+        text = element_text(family = "Arial"))
 
-accmeas.mn <- accmeas %>%
-  mutate(cutoff = as.character(cutoff)) %>%
-  group_by(cutoff) %>%
+# Calculating the means and standard errors for F1-scores
+# Plot as a bar chart with standard errors
+f4a <- scenarios %>%
+  group_by(Feature_Set) %>%
   summarise(
-    prMn = mean(prSize,na.rm=T), # size of presence data (mean)
-    prSd = sd(prSize,na.rm=T), # size of presence data (sd)
-    bgMn = mean(bgSize,na.rm=T), # size of background data (mean)
-    bgSd = sd(bgSize,na.rm=T), # size of background data (sd)
-    fprMn = mean(fpr,na.rm=T), # False Positive Rate (mean)
-    fprSd = sd(fpr,na.rm=T),
-    tprMn = mean(tpr,na.rm=T), # True Positive Rate (mean)
-    tprSd = sd(tpr,na.rm=T),
-    precision = mean(precision,na.rm=T), # precision (mean)
-    precisionSd = sd(precision,na.rm=T), 
-    recall = mean(recall,na.rm=T), # recall (mean)
-    recallSd = sd(recall,na.rm=T),
-    f1 = mean(f1,na.rm=T), # F1 score (mean)
-    f1Sd = sd(f1,na.rm=T),
-    mcc = mean(mcc,na.rm=T), # Matthew's Correlation Coefficient (mean)
-    mccSd = sd(mcc,na.rm=T),
-    accuracy = mean(accuracy,na.rm=T), # Overall accuracy (mean)
-    accuracySd = sd(accuracy,na.rm=T)
+    Mean = mean(F1),
+    SE = sd(F1) / sqrt(n())
   ) %>%
-  ungroup() %>%
-  mutate(cutoff = round(as.double(cutoff),3))
+  # Plotting the bar chart with error bars
+  ggplot(aes(x=reorder(Feature_Set, Mean), y=Mean)) +
+    geom_bar(stat="identity", fill="lightblue", width=0.75) +
+    geom_errorbar(aes(ymin=Mean-SE, ymax=Mean+SE), width=0.2) +
+    ylim(0, 1) +
+    labs(x="Classification Scenario", y="F1-score", tag="A") +
+    theme_bw(base_size = 10) +
+    theme(
+      plot.margin = unit(c(0.2,0.2,0.2,0.2), 'lines'),
+      axis.title.y = element_text(size=10, face="italic", margin = unit(c(0,0.4,0,0), "cm")),
+      axis.title.x = element_text(size=10, face="italic", margin = unit(c(0.4,0,0,0), "cm")),
+      axis.text = element_text(size=9),
+      strip.text.x = element_text(size = 10),
+      axis.text.x = element_text(angle = 45, hjust=1),
+      text = element_text(family = "Arial")
+    )
+f4a
 
-# Calculate optimum threshold based on F1 statistic
+# Save out
+ggsave(f4a, file = "../../figures/Figure4A_Class_Scenarios.png",
+       dpi = 300, bg="white") # adjust dpi accordingly
 
-print("~~~~~Model averages and maximum F-score~~~~~")
-
-(cutoffOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$cutoff)
-(precisionOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$precision)
-(recallOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$recall)
-(fprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$fprMn)
-(tprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$tprMn)
-(max_f1Mn <- max(accmeas.mn$f1, na.rm = TRUE))
-
+rm(scenarios)
 ```
 
-```{r}
-# F1 based
-print("F1-based accuracy metrics")
-paste0("F1 Score: ",(f1Opt = accmeas.mn[which.max(accmeas.mn$f1),]$f1))
-paste0("Overall Accuracy: ",(oaOpt = accmeas.mn[which.max(accmeas.mn$f1),]$accuracy))
-paste0("Precision: ",(precOpt = accmeas.mn[which.max(accmeas.mn$f1),]$precision))
-paste0("Recall: ",(recOpt = accmeas.mn[which.max(accmeas.mn$f1),]$recall))
-paste0("Cutoff: ",(threshOpt = accmeas.mn[which.max(accmeas.mn$f1),]$cutoff))
+## Figure 4CD. Accuracy Assessment of the Best Performing Model
 
-# Mathews Correlation Coefficient
-print("---------------------------")
-print("MCC-based accuracy metrics")
-paste0("MCC: ",(mccOpt = accmeas.mn[which.max(accmeas.mn$mcc),]$mcc))
-paste0("Overall Accuracy: ",(oaOptmcc = accmeas.mn[which.max(accmeas.mn$mcc),]$accuracy))
-paste0("Precision: ",(precOptmcc = accmeas.mn[which.max(accmeas.mn$mcc),]$precision))
-paste0("Recall: ",(recOptmcc = accmeas.mn[which.max(accmeas.mn$mcc),]$recall))
-paste0("Cutoff: ",(threshOptmcc = accmeas.mn[which.max(accmeas.mn$mcc),]$cutoff))
+The optimum cutoff value for classification is defined as the average cutoff across folds at which the F1-score is maximized. We can see the optimum cutoff value and how it corresponds with F1-score and the AUC-PR curve.
+
+```{r warning=F, fig.width=3, fig.height=3}
+paste0("Optimum cutoff for classification: ",round((opt_cutoff <- mean(opt_thresh$cutoff_f1)),3))
+paste0("Average F1-score: ",round((f1max <- max(opt_thresh$f1)),3))
+
+# AUC-PR Curve (approximation)
+
+ggplot(data=accmeas) +
+  geom_line(aes(x=fpr,y=tpr,color=factor(model)),linewidth=0.4) +
+  scale_color_viridis_d(option="turbo") +
+  scale_x_continuous(limits=c(0,1)) +  # Set x axis limits from 0 to 1
+  scale_y_continuous(limits=c(0,1)) +
+  labs(x='False Positive Rate', y='True Positive Rate') +
+  coord_fixed(ratio = 1) +  # to keep the x and y axes scales same
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +  # diagonal
+  theme_light() +
+  theme(legend.position = "none",
+        axis.title.y = element_text(size=11,face="italic",
+                                    margin = unit(c(0,0.4,0,0), "cm")),
+        axis.title.x = element_text(size=11,face="italic",
+                                    margin = unit(c(0.4,0,0,0), "cm")),
+        axis.text = element_text(size=10),
+        strip.text.x = element_text(size = 11))
+
+ggplot(data=accmeas) +
+  geom_line(aes(x=cutoff,y=f1,color=factor(model)),linewidth=0.4) +
+  scale_color_viridis_d(option="turbo") +
+  geom_vline(xintercept=0.50, linetype="dashed", color="black") +
+  geom_point(aes(x=opt_cutoff, y=f1max),
+             color = "red", size = 3, shape = 19) +
+  geom_text(aes(x=opt_cutoff, y=f1max),
+            label = paste0('Optimal threshold: ', round(opt_cutoff,3)),
+            nudge_x = 0.0, nudge_y = 0.08, size = 3.5) +
+  scale_x_continuous(limits=c(0,1)) +  # Set x axis limits from 0 to 1
+  scale_y_continuous(limits=c(0,1)) +
+  labs(x='Threshold', y='F1 Score') +
+  coord_fixed(ratio = 1) +  # to keep the x and y axes scales same
+  theme_light() +
+  theme(legend.position = "none",
+        axis.title.y = element_text(size=11,face="italic",
+                                    margin = unit(c(0,0.4,0,0), "cm")),
+        axis.title.x = element_text(size=11,face="italic",
+                                    margin = unit(c(0.4,0,0,0), "cm")),
+        axis.text = element_text(size=10),
+        strip.text.x = element_text(size = 11))
+```
+
+Using the optimum cutoff value, we can classify the test data and calculate the Precision, Recall, and F1-score. 
+
+```{r}
+testPart <- "../../data/tabular/mod/results/best_model/southern_rockies_test_probs_n55.csv"
+# Assign the classification label based on the optimum cutoff
+testData <- read_csv(testPart, show_col_types=FALSE) %>%
+  rename(gee_id = `system:index`,
+         TrueLabel = label) %>%
+  dplyr::select(-.geo) %>%
+  mutate(probability = probability*0.001, # scale back
+         ClassLabel = if_else(probability >= opt_cutoff, 1, 0)) %>%
+  group_by(seed) %>%
+  summarize(
+    tp = sum(TrueLabel == 1 & ClassLabel == 1),
+    tn = sum(TrueLabel == 0 & ClassLabel == 0),
+    fp = sum(TrueLabel == 0 & ClassLabel == 1),
+    fn = sum(TrueLabel == 1 & ClassLabel == 0),
+    accuracy = (tp + tn) / (tp + tn + fp + fn),
+    precision = tp / (tp + fp),
+    recall = tp / (tp + fn),
+    f1 = 2 * (precision * recall) / (precision + recall),
+    .groups = 'drop' # This ensures that the result is a single data frame, not a grouped one
+  )
+head(testData,10)
+
+# First, get the overall F1/MCC for the classification
+print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+paste0("Average F1-score for the best performing model at the optimum cutoff: ",mean(testData$f1))
+paste0("Range of F1-scores: ",range(testData$f1))
+paste0("StDev of F1-scores: ",sd(testData$f1))
+summary(testData$f1)
+
+# rm(testPart,testData)
 ```
 
 Plot the model accuracy results for the optimum threshold.
 
-```{r}
-
-# Get the best F1 score for each model run
-accmeas.best <- accmeas %>% 
-  group_by(factor(model)) %>% 
-  top_n(1,f1) %>%
-  ungroup() %>%
-  mutate(model_iter = row_number())
-
-print(paste0("Cutoff: Mean = ",round(mean(accmeas.best$cutoff),3),"; Standard Deviation: ",round(sd(accmeas.best$cutoff),3)))
-print(paste0("F1 Score: Mean = ",round(mean(accmeas.best$f1),3),"; Standard Deviation: ",round(sd(accmeas.best$f1),3)))
-
-```
-
-Check on the optimum threshold by spatial block:
-
-```{r}
-
-```
-
 Figure 4A: Model Accuracy (F1 and OA)
 
-```{r message=F, warning=F}
+```{r message=F, warning=F, fig.height=3.5, fig.width=6.5}
 
 cols <- c("F1 Score"="#1f78b4","Overall Accuracy"="gray75")
 
-f4a <- ggplot(data=accmeas.best) +
-  geom_hline(yintercept=0.972760973096824,linetype="dashed",color="gray85") +
-  geom_hline(yintercept=0.910339477355629,linetype="dashed",color="#1f78b4") +
-  geom_line(aes(x=factor(model_iter),y=accuracy,group=1),color="gray65") +
-  geom_line(aes(x=factor(model_iter),y=f1,group=1),color="#1f78b4") +
-  geom_point(aes(x=factor(model_iter),y=f1,size=f1), color="#1f78b4") +
-  geom_point(aes(x=factor(model_iter),y=accuracy,size=accuracy), color="gray65") +
+testData <- testData %>%
+  mutate(Fold = as.numeric(factor(seed, levels = sort(unique(seed)))))
+
+f4b <- ggplot(data=testData) +
+  geom_hline(yintercept=mean(testData$precision),linetype="dashed",color="gray85") +
+  geom_hline(yintercept=mean(testData$recall),linetype="dashed",color="gray45") +
+  geom_hline(yintercept=mean(testData$f1),linetype="dashed",color="#1f78b4") +
+  # Plot the Precision and Recall
+  geom_line(aes(x=factor(Fold),y=precision,group=1),color="gray65") +
+  geom_line(aes(x=factor(Fold),y=recall,group=1),color="gray35") +
+  # Plot the F1-score
+  geom_line(aes(x=factor(Fold),y=f1,group=1),color="#1f78b4") +
+  geom_point(aes(x=factor(Fold),y=f1,size=f1), color="#1f78b4") +
   scale_size(range = c(3,6)) +
   coord_cartesian(ylim = c(0.85, 1)) +
-  labs(x="Model Iteration", y="Score", tag="A") +
-  annotate("text", x = 3, y = 0.99, label = paste("Average Overall Accuracy: ", round(oaOpt, 2))) +
-  annotate("text", x = 2.6, y = 0.88, label = paste("Average F1 Score: ", round(f1Opt, 2))) +
+  labs(x="Fold", y="Score", tag="B") +
+  # annotate("text", x = 2.6, y = 0.88, label = paste("Average F1 Score: ", round(mean(testData$f1), 2))) +
   theme_bw() +
   guides(size="none") +
   theme(
@@ -584,116 +646,30 @@ f4a <- ggplot(data=accmeas.best) +
         axis.text = element_text(size=10),
         strip.text.x = element_text(size = 11),
         text = element_text(family = "Arial"))
-f4a
-
-ggsave(f4a, file = "../../figures/Figure4A_Best_Model_Acc_F1.png",
-       dpi = 300, bg="white") # adjust dpi accordingly
-
-```
-
-Figure 4B: Sensitivity Analysis
-
-```{r}
-
-# Labels for each model subset
-
-labels_ = c(
-  "winter_sar" = "M1", 
-  "summer_sar" = "M2",
-  "summer_winter_sar_text" = "M3",
-  "summer_winter_sar" = "M4",
-  "autumn_spectral" = "M5",
-  "summer_spectral" = "M6",
-  "summer_spectral_ind" = "M7",
-  "spectral_sar_ind" = "M8",
-  "summer_autumn_spectral" = "M9",
-  "spectral_sar" = "M10",
-  "final" = "Final Model"
-)
-
-# Add in the final model to the sensitivity analysis
-
-add <- accmeas.best %>%
-  ungroup() %>%
-  select(model,f1) %>%
-  mutate(subset = "final") %>%
-  rename(f1Max = f1)
-glimpse(add)
-accmeas.s <- accmeas.s %>%
-  bind_rows(add)
-rm(add)
-
-print(unique(accmeas.s$subset))
-
-# Generate the box plots of F1 score
-
-f4b <- ggplot(data=accmeas.s, aes(x=reorder(subset,f1Max),y=f1Max)) +
-  geom_boxplot() +
-  scale_x_discrete(labels=labels_) +
-  labs(x="Input Features",y="Maximum F1 Score", tag="B") +
-  theme_bw(11) +
-  theme(
-        plot.margin = unit(c(0.2,0.2,0.2,0.2), 'lines'),
-        axis.title.y = element_text(size=11,face="italic",
-                                    margin = unit(c(0,0.4,0,0), "cm")),
-        axis.title.x = element_text(size=11,face="italic",
-                                    margin = unit(c(0.4,0,0,0), "cm")),
-        axis.text = element_text(size=10),
-        strip.text.x = element_text(size = 11),
-        axis.text.x = element_text(angle = 45, hjust=1),
-        text = element_text(family = "Arial"))
 f4b
 
-# Save out
-
-ggsave(f4b, file = "../../figures/Figure4B_Model_Sensitivity.png",
+ggsave(f4b, file = "../../figures/Figure4A_Best_Model_Acc_F1.png",
        dpi = 300, bg="white") # adjust dpi accordingly
+
 ```
 
-Combine the two figures for Figure 4AB:
-
-```{r fig.width=7.5, fig.height=6}
-
-f4 <- ggarrange(f4a,f4b,nrow=2)
-f4
-
-ggsave(f4, file = "../../figures/Figure4AB_Model_Accuracy_Sensitivity.png",
-       width=7.5, height=7.5, dpi = 300, bg="white") # adjust dpi accordingly
-
+```{r fig.width=7.5, fig.height=4}
+arr4 <- ggarrange(f4a,f4b,widths=c(1, 0.85), align="h")
+arr4
+ggsave(arr4, file = "../../figures/Figure4_ModelSel_BestModel.png",
+       dpi = 300, bg="white") # adjust dpi accordingly
 ```
 
 ## Figure 6: Feature importance from the best model
 
 ```{r}
+# Feature Importance
+ftr_imp <- read_csv('../../data/tabular/mod/results/best_model/southern_rockies_feature_imps_n55.csv',
+                    show_col_types = FALSE)
 glimpse(ftr_imp)
 ```
 
-```{r message=F, warning=F}
-
-# # Tidy the data frame
-# df.imp <- ftr_imp %>% 
-#   select(-c(.geo,`system:index`)) %>%
-#   rename(model = seed) %>%
-#   mutate(model = as.factor(model)) %>%
-#   # Summarize across to grab the relative importance
-#   rowwise() %>%
-#   mutate(total = sum(c_across(B11_autumn:VV_winter_ent))) %>%
-#   ungroup() %>%
-#   mutate(across(B11_autumn:VV_winter_ent, ~ . * 100 / total)) %>%
-#   select(-total)
-# glimpse(df.imp)
-
-# # Tidy the data frame
-# df.imp <- ftr_imp %>% 
-#   select(-c(.geo,`system:index`)) %>%
-#   rename(model = seed) %>%
-#   mutate(model = as.factor(model)) %>%
-#   # Summarize across to grab the relative importance
-#   group_by(model) %>%
-#   mutate(total = sum(across(B11_autumn:slope))) %>%
-#   mutate(across(B11_autumn:slope, ~ . / total)) %>%
-#   ungroup() %>%
-#   select(-total)
+```{r message=F, warning=F, fig.width= 6, fig.height=4}
 
 # Tidy the data frame
 df.imp <- ftr_imp %>% 
@@ -701,41 +677,31 @@ df.imp <- ftr_imp %>%
   rename(model = seed) %>%
   mutate(model = as.factor(model))
 
-```
-
-```{r}
-
 # Pivot longer
 df.imp.p <- df.imp %>%
   pivot_longer(cols = -model) %>%
   rename(importance = value,
          band = name) %>%
-  mutate(season = if_else(str_detect(band,"_autumn"), "Autumn Spectral", "Summer Spectral"),
-         season = if_else(str_detect(band,"_winter"), "Winter SAR", season),
-         season = if_else(str_detect(band,"VV_summer"), "Summer SAR", season),
-         season = if_else(str_detect(band,"VH_summer"), "Summer SAR", season))
+  mutate(season = if_else(str_detect(band,"_autumn"), "Autumn S2", "Summer S2"),
+         season = if_else(str_detect(band,"_winter"), "Winter S1", season),
+         season = if_else(str_detect(band,"VV_summer"), "Summer S1", season),
+         season = if_else(str_detect(band,"VH_summer"), "Summer S1", season))
 glimpse(df.imp.p)
 
-```
-
-```{r message=F}
-
 # Grab the top 20 over all model runs
-
 top <- df.imp.p %>%
   group_by(band) %>%
   summarize(median = median(importance)) %>%
   ungroup()
-
-top <- head(arrange(top,desc(median)), n = 20)
+top <- head(arrange(top,desc(median)), n = 10)
 
 # Color palette
 
 cols <- c(
-  "Summer Spectral" = "#87CEEB", 
-  "Autumn Spectral" = "#DAA520",
-  "Winter SAR" = "gray29",
-  "Summer SAR" = "gray89"
+  "Summer S2" = "#87CEEB", 
+  "Autumn S2" = "#DAA520",
+  "Winter S1" = "gray29",
+  "Summer S1" = "gray89"
 )
 
 # Boxplot
@@ -745,7 +711,7 @@ f6 <- ggplot(data=df.imp.p %>% filter(band %in% top$band),
               aes(x=reorder(band,importance), fill=season)) +
   geom_boxplot(aes(y=importance), position = position_dodge(0.5)) +
   scale_fill_manual(values = cols, 
-                    labels = c("Autumn Spectral","Summer SAR","Summer Spectral","Winter SAR")) +
+                    labels = c("Autumn S2","Summer S1","Summer S2","Winter S1")) +
   coord_flip() +
   theme_bw(11) +
   theme(axis.text.x = element_text(size=11),
@@ -759,7 +725,7 @@ f6 <- ggplot(data=df.imp.p %>% filter(band %in% top$band),
   labs(x="Feature", y="Importance", fill="Season: ")
 f6
 
-ggsave(f6, file = "../../figures/Figure6_FeatureImportance.png",
+ggsave(f6, file = "../../figures/Figure6_FeatureImportance_top10.png",
        dpi=300, bg="white") # adjust dpi accordingly
 
 ```
@@ -773,14 +739,14 @@ rm(accmeas,accmeas.best,accmeas.mn,accmeas.s,df.imp,
 gc()
 ```
 
-## Figures 7, 8 - Spatial Agreement and Landscape Patch Dynamics
+# Spatial Agreement and Landscape Patch Dynamics
 
-# Figure 7: Spatial Agreement
+## Figure 7: Spatial Agreement
 
 ```{r}
 
 cols <- c("#4DAF4A", "#984EA3", "#FF7F00")
-flabs <- c(prec = "Precision", rec = "Recall", f1 = "F1-score")
+flabs <- c(precision = "Precision", recall = "Recall", f1 = "F1-score")
 
 # Reshape the agreement table for plotting facet wrap
 
@@ -791,7 +757,7 @@ aggr.sr.m <- reshape2::melt(
 ) %>%
   na.omit()
 
-# WRNF as a whole
+# White River NF
 aggr.wr.m <- reshape2::melt(
   aggr.wr, id.vars = c("blocksize", "source", "region"), 
   measure.vars = c("precision", "recall", "f1"), variable.name = "statistic"
@@ -802,6 +768,7 @@ aggr.wr.m <- reshape2::melt(
 
 f7 <- ggplot(data=aggr.sr.m, aes(x=factor(blocksize), y=value, fill=factor(source))) +
   geom_boxplot(position = position_dodge()) + 
+  # geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value)) +
   scale_fill_manual(values=cols, labels=c("LANDFIRE EVT","USFS TreeMap","USFS ITSP"), name="Source: ") +
   facet_wrap(~statistic, labeller = labeller(statistic = flabs)) +
   theme_light(11) +
@@ -814,25 +781,31 @@ f7 <- ggplot(data=aggr.sr.m, aes(x=factor(blocksize), y=value, fill=factor(sourc
         text = element_text(family = "Arial")) +
   labs(x="Blocksize",y="Value")
 f7
-# Add the WRNF statistics
-f7 <- f7 +
-  # Plot the WRNF points on top as a different shape
-  geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value, shape=region), 
-             position = position_dodge(width = 0.75), size = 3, color="black") +
-  scale_shape_manual(name="Subregion", values=c("White River NF" = 8)) +
-  guides(
-    fill=guide_legend(override.aes=list(shape=NA)), # No shape in the fill legend
-    shape=guide_legend(title="Subregion", override.aes=list(color="black")) # Shape legend for Subregion
-  )
-f7
 
+# # Add the WRNF statistics
+# f7 <- f7 +
+#   # Plot the WRNF points on top as a different shape
+#   geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value, shape=region), 
+#              position = position_dodge(width = 0.75), size = 3, color="black") +
+#   scale_shape_manual(name="Subregion", values=c("White River NF" = 8)) +
+#   guides(
+#     fill=guide_legend(override.aes=list(shape=NA)), # No shape in the fill legend
+#     shape=guide_legend(title="Subregion", override.aes=list(color="black")) # Shape legend for Subregion
+#   )
+# f7
+```
+```{r}
 # Add a spatial map of statistics by blocks
 blocks_ <- blocks %>%
-  left_join(ref.srme, by="grid_id") %>%
-  pivot_longer(cols = c(prec, rec, f1), names_to = "statistic", values_to = "value")
+  mutate(id = as.numeric(id)-1) %>%
+  rename(block = id) %>%
+  left_join(aggr.sr, by="block") %>%
+  pivot_longer(cols = c(precision, recall, f1), names_to = "statistic", values_to = "value") %>%
+  na.omit()
 
 ggplot(data = blocks_) +
   geom_sf(aes(fill = value)) +
+  geom_sf(data=srme, fill=NA, color="grey20", linewidth=0.4) +
   facet_grid(source ~ statistic) +
   scale_fill_viridis_c(option = "C") + # Use a continuous color scale
   theme_void() +
@@ -931,7 +904,7 @@ rm(ref.global,ref.global.m,f7a,f7b,f7,ref.focal)
 gc()
 ```
 
-# Figure 8: Landscape Patch Dynamics
+## Figure 8: Landscape Patch Dynamics
 
 ```{r}
 unique(factor(patch_metrics$source))

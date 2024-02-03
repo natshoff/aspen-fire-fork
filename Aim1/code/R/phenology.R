@@ -50,16 +50,17 @@ ggplot(phenology, aes(x=factor(year), y=season_length)) +
        fill = "Year") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
 
-
 # Growing season length as a function of elevation
-ggplot(data=phenology, aes(x=elevation_mn,y=doy_green_max)) +
-    geom_smooth(method="lm",colour="gray40", fill="gray70", size=0.8) +
+ggplot(data=phenology, aes(x=elevation_mn,y=season_length)) +
+    geom_smooth(method="lm",colour="gray40", fill="gray70", linewidth=0.8) +
     geom_point(size=0.4, color="gray10", fill=NA) +
     facet_wrap(~factor(year), scales="free_x") +
     theme_light(12) +
-    labs(title="Onset of Maximum Greenness by Elevation",
+    labs(title="Growing Season Length by Elevation",
          x="Elevation",y="Day-of-Year")
 
+
+############
 # DOY plots
 
 # Facet wrap plot
@@ -120,6 +121,7 @@ ggplot(phenology.l, aes(x=factor(year), y=doy, fill=metric)) +
 # Relationship with elevation
 ggplot(data=phenology.l, aes(x=elevation_mn,y=doy,color=metric)) +
   geom_point(size=1.2) +
+  geom_smooth(method="lm") +
   theme_light(12)
 
 # Calculate the average metrics to help in determining the optimal windows
@@ -133,5 +135,10 @@ print("Metric averages across blocks and years: ")
 summary(phenology_by_year)
 
 # Grab the 2019 summary across all blocks
-summary(phenology%>%filter(year==2019))
+phenology.2019 <- phenology %>% filter(year==2019)
+summary(phenology.2019)
+quantile(phenology.2019$doy_green_max, probs = seq(0, 1, 0.1))
+quantile(phenology.2019$doy_green_dec, probs = seq(0, 1, 0.1))
+quantile(phenology.2019$doy_midsenescence, probs = seq(0, 1, 0.1))
+quantile(phenology.2019$doy_green_min, probs = seq(0, 1, 0.1))
 
