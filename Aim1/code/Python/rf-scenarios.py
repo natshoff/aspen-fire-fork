@@ -84,7 +84,8 @@ sc2 = pbl[['PresAbs','Block_ID','VV_summer','VH_summer',
            'VV_summer_contrast','VV_summer_corr', 'VV_summer_ent', 'VV_summer_var',
            'elevation','slope','aspect']]
 # Winter radar
-sc3 = pbl[['PresAbs','Block_ID','VV_winter','VH_winter']]
+sc3 = pbl[['PresAbs','Block_ID','VV_winter','VH_winter',
+           'elevation','slope','aspect']]
 sc4 = pbl[['PresAbs','Block_ID','VV_winter','VH_winter',
            'VH_winter_contrast', 'VH_winter_corr','VH_winter_ent', 'VH_winter_var',
            'VV_winter_contrast', 'VV_winter_corr', 'VV_winter_ent','VV_winter_var',
@@ -222,6 +223,7 @@ for ft_name, ft_data in ref_dict.items():
             'Fold': [fold_idx],
             'Accuracy': [accuracy],
             'Precision': [precision],
+            'Recall': [recall],
             'F1': [f1],
             'MCC': [mcc],
             'N_Pres_Train': [n_pres_train],

@@ -169,7 +169,7 @@ calculate_metrics <- function(df, true_label, pred_label) {
   recall <- tp / (tp + fn)
   f1_score <- 2 * (precision * recall) / (precision + recall)
   
-  return(list(accuracy = accuracy, f1_score = f1_score))
+  return(list(accuracy = accuracy, f1_score = f1_score, precision = precision, recall = recall))
 }
 
 # For each reference set

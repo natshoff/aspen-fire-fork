@@ -459,11 +459,12 @@ opt_thresh <- read_csv('../../data/tabular/mod/results/best_model/southern_rocki
 
 glimpse(accmeas)
 head(opt_thresh)
+
 ```
 
 ## Figure 4AB. Classification Scenarios
 
-```{r fig.width=6.5, fig.height=3.5}
+```{r fig.width=6.5, fig.height=3.5, message=F, warning=F}
 
 scenarios <- read_csv("../../data/tabular/mod/results/scenarios/rf_accmets_scenarios.csv", show_col_types = FALSE)
 
@@ -476,6 +477,7 @@ final_model <- opt_thresh %>%
 scenarios <- bind_rows(scenarios,final_model)
 head(scenarios)
 
+# Box plot version
 ggplot(data=scenarios, aes(x=reorder(Feature_Set,F1),y=F1)) +
   geom_boxplot(outlier.size=0.6, fill="lightblue") +
   ylim(0,1) +
@@ -505,7 +507,7 @@ f4a <- scenarios %>%
     geom_bar(stat="identity", fill="lightblue", width=0.75) +
     geom_errorbar(aes(ymin=Mean-SE, ymax=Mean+SE), width=0.2) +
     ylim(0, 1) +
-    labs(x="Classification Scenario", y="F1-score", tag="A") +
+    labs(x="Classification Scenario", y="F1-score") +
     theme_bw(base_size = 10) +
     theme(
       plot.margin = unit(c(0.2,0.2,0.2,0.2), 'lines'),
@@ -522,7 +524,63 @@ f4a
 ggsave(f4a, file = "../../figures/Figure4A_Class_Scenarios.png",
        dpi = 300, bg="white") # adjust dpi accordingly
 
-rm(scenarios)
+```
+
+## Table X. Average F1-score and other metrics for the classification scenarios and the final model
+
+```{r}
+# Read in the best performing model results to append
+final_model <- opt_thresh %>%
+  mutate(Feature_Set = "Final_Model") %>%
+  rename(F1 = f1) %>%
+  select(Feature_Set,F1)
+
+scenarios_ <- bind_rows(scenarios,final_model)
+head(scenarios_)
+
+# Create the final table
+df <- scenarios_ %>%
+  group_by(Feature_Set) %>%
+  summarize(
+    F1_mn = mean(F1),
+    F1_sd = sd(F1)
+  ) %>%
+  mutate(
+    n_features = if_else(Feature_Set == "Summer_S1" | Feature_Set == "Winter_S1", 5, 0),
+    n_features = if_else(Feature_Set == "Summer_S1_GLCM" | Feature_Set == "Winter_S1_GLCM", 13, n_features),
+    n_features = if_else(Feature_Set == "Summer_Winter_S1", 23, n_features),
+    n_features = if_else(Feature_Set == "Summer_S2" | Feature_Set == "Autumn_S2", 13, n_features),
+    n_features = if_else(Feature_Set == "Summer_S2_VI" | Feature_Set == "Autumn_S2_VI", 19, n_features),
+    n_features = if_else(Feature_Set == "Summer_Autumn_S2", 35, n_features),
+    n_features = if_else(Feature_Set == "Combined_S1_S2", 55, n_features),
+    n_features = if_else(Feature_Set == "Final_Model", 17, n_features)
+  )
+
+head(df,12)
+
+# Create a tidy table
+
+# Set font name for table
+fontname <- "Times New Roman"
+
+# Clean up extra rows and digits
+cleaned <- df %>%
+ mutate_if(is.double, ~ round(., digits = 4)) %>%
+ # Sort from fastest to slowest
+ arrange(desc(F1_mn))
+
+# Fix names and add units
+names(cleaned) <- c("Feature Set","Mean F1-score","Standard Deviation","Number of Features")
+
+# Create the flextable
+ft <- flextable::flextable(cleaned) %>%
+  flextable::font(fontname = fontname, part = "all") %>%
+  flextable::autofit() %>% 
+  flextable::fit_to_width(7.5)
+ft
+print(ft, preview = "docx")
+
+# rm(scenarios,df)
 ```
 
 ## Figure 4CD. Accuracy Assessment of the Best Performing Model
@@ -552,18 +610,18 @@ ggplot(data=accmeas) +
         axis.text = element_text(size=10),
         strip.text.x = element_text(size = 11))
 
-ggplot(data=accmeas) +
+f5b <- ggplot(data=accmeas) +
   geom_line(aes(x=cutoff,y=f1,color=factor(model)),linewidth=0.4) +
   scale_color_viridis_d(option="turbo") +
-  geom_vline(xintercept=0.50, linetype="dashed", color="black") +
+  # geom_vline(xintercept=0.50, linetype="dashed", color="black") +
   geom_point(aes(x=opt_cutoff, y=f1max),
-             color = "red", size = 3, shape = 19) +
+             color = "black", size = 3, shape = 19) +
   geom_text(aes(x=opt_cutoff, y=f1max),
             label = paste0('Optimal threshold: ', round(opt_cutoff,3)),
             nudge_x = 0.0, nudge_y = 0.08, size = 3.5) +
   scale_x_continuous(limits=c(0,1)) +  # Set x axis limits from 0 to 1
   scale_y_continuous(limits=c(0,1)) +
-  labs(x='Threshold', y='F1 Score') +
+  labs(x='CLassification Threshold', y='F1 Score') +
   coord_fixed(ratio = 1) +  # to keep the x and y axes scales same
   theme_light() +
   theme(legend.position = "none",
@@ -573,6 +631,12 @@ ggplot(data=accmeas) +
                                     margin = unit(c(0.4,0,0,0), "cm")),
         axis.text = element_text(size=10),
         strip.text.x = element_text(size = 11))
+f5b
+
+# Save out
+ggsave(f4a, file = "../../figures/Figure4A_Class_Scenarios.png",
+       dpi = 300, bg="white") # adjust dpi accordingly
+
 ```
 
 Using the optimum cutoff value, we can classify the test data and calculate the Precision, Recall, and F1-score. 
@@ -653,10 +717,10 @@ ggsave(f4b, file = "../../figures/Figure4A_Best_Model_Acc_F1.png",
 
 ```
 
-```{r fig.width=7.5, fig.height=4}
-arr4 <- ggarrange(f4a,f4b,widths=c(1, 0.85), align="h")
+```{r fig.width=7.5, fig.height=7.5}
+arr4 <- ggarrange(f4a,ggarrange(f4b,f5b, ncol=2, nrow=1, align='h'), nrow=2, align="h")
 arr4
-ggsave(arr4, file = "../../figures/Figure4_ModelSel_BestModel.png",
+ggsave(arr4, file = "../../figures/Figure4_ModelSel_BestModel_ThreshOpt.png",
        dpi = 300, bg="white") # adjust dpi accordingly
 ```
 
@@ -669,7 +733,7 @@ ftr_imp <- read_csv('../../data/tabular/mod/results/best_model/southern_rockies_
 glimpse(ftr_imp)
 ```
 
-```{r message=F, warning=F, fig.width= 6, fig.height=4}
+```{r message=F, warning=F, fig.width= 6.5, fig.height=3.5}
 
 # Tidy the data frame
 df.imp <- ftr_imp %>% 
@@ -735,13 +799,30 @@ Clean up!
 ```{r}
 rm(list = ls.str(mode = 'numeric'))
 rm(accmeas,accmeas.best,accmeas.mn,accmeas.s,df.imp,
-   df.imp.p,f4,f4a,f4b,f6,ftr_imp,top,labels_,cols)
+   df.imp.p,f4,f4a,f4b,f6,ftr_imp,top,cols,arr4,cleaned,
+   df,f5b,final_model,ft,opt_thresh,scenarios,scenarios_,testData)
 gc()
 ```
 
 # Spatial Agreement and Landscape Patch Dynamics
 
 ## Figure 7: Spatial Agreement
+
+Load the accuracy assessment (comparison of F1-score from the test data).
+
+```{r message=F}
+ref_acc <- read_csv('../../data/tabular/mod/results/best_model/southern_rockies_ref_accmeas.csv',
+                    show_col_types = F)
+head(ref_acc)
+
+# Create a tidy table
+df <- ref_acc %>%
+  filter(metric == "Predicted")
+head(df)
+
+rm(df,ref_acc)
+```
+
 
 ```{r}
 
