@@ -1024,37 +1024,6 @@ ggsave(f7a, file = "../../figures/Figure7_Global_PrecRec_Agreement.png", dpi=300
 
 ```
 
-Focal accuracy:
-
-```{r message=F}
-
-# ref.focal$refbudens <- log(1 + ref.focal$tp + ref.focal$fn)
-# 
-# ggplot(ref.focal %>% filter(region=="SRME"), aes(x = prec, y = rec, color = refbudens)) +
-#    geom_point(size = 2, alpha = 0.9) +
-#    scale_color_viridis_c() +
-#    facet_grid(rows = vars(geog_scale), cols = vars(blocksize), scales = "fixed") +
-#    theme_light() +
-#    labs(
-#       title = 'Spatially explicit accuracy: Precision (x) vs. Recall (y)',
-#       subtitle = 'for multiple analytical units and spatial support levels',
-#       color = 'refbudens',
-#       x = 'Precision',
-#       y = 'Recall'
-#    ) +
-#    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
-#    theme(legend.position = "bottom")
-
-```
-
-Join the two plots:
-
-```{r}
-# f7 <- ggarrange(global_precrec,focal.prec,focal.rec,nrow=1,labels=c("A","B","C"))
-# f7
-# ggsave(f7, file="../../figures/Figure7_Global_Focal_Agreement.png", dpi=300)
-```
-
 Clean up! 
 
 ```{r}
@@ -1065,17 +1034,149 @@ gc()
 ## Figure 8: Landscape Patch Dynamics
 
 ```{r}
-# List csv file paths for the Southern Rockies
-maindir <- '../../data/tabular/results/ls_metrics'
-grids_list <- list.files(path = paste0(maindir), 
-                         pattern = "\\.csv$", 
-                         full.names = TRUE, 
-                         recursive = TRUE)
+class.sr_ <- class.sr %>%
+  mutate(source = if_else(source=="lc16_evt_200_bin_srme_10m", "LANDFIRE EVT", source),
+         source = if_else(source=="s2aspen_prob_10m_binOpt_srme", "Sentinel-based Map", source),
+         source = if_else(source=="usfs_itsp_aspen_ba_gt10_srme_10m", "USFS ITSP", source),
+         source = if_else(source=="usfs_treemap16_balive_int_bin_srme_10m", "USFS TreeMap", source))
+patch.sr_ <- patch.sr %>%
+  mutate(source = if_else(source=="lc16_evt_200_bin_srme_10m", "LANDFIRE EVT", source),
+         source = if_else(source=="s2aspen_prob_10m_binOpt_srme", "Sentinel-based Map", source),
+         source = if_else(source=="usfs_itsp_aspen_ba_gt10_srme_10m", "USFS ITSP", source),
+         source = if_else(source=="usfs_treemap16_balive_int_bin_srme_10m", "USFS TreeMap", source),
+         area_qt = factor(ntile(area, 4), labels = c("Q1", "Q2", "Q3", "Q4")))
+glimpse(patch.sr_)
+glimpse(class.sr_)
+
+class.wr_ <- class.wr %>%
+  mutate(region = "wrnf") %>%
+  mutate(source = if_else(source=="lc16_evt_200_bin_wrnf_10m", "LANDFIRE EVT", source),
+         source = if_else(source=="s2aspen_prob_10m_binOpt_wrnf", "Sentinel-based Map", source),
+         source = if_else(source=="usfs_itsp_aspen_ba_gt10_wrnf_10m", "USFS ITSP", source),
+         source = if_else(source=="usfs_treemap16_balive_int_bin_wrnf_10m", "USFS TreeMap", source))
+patch.wr_ <- patch.wr %>%
+  mutate(region = "wrnf") %>%
+  mutate(source = if_else(source=="lc16_evt_200_bin_wrnf_10m", "LANDFIRE EVT", source),
+         source = if_else(source=="s2aspen_prob_10m_binOpt_wrnf", "Sentinel-based Map", source),
+         source = if_else(source=="usfs_itsp_aspen_ba_gt10_wrnf_10m", "USFS ITSP", source),
+         source = if_else(source=="usfs_treemap16_balive_int_bin_wrnf_10m", "USFS TreeMap", source),
+         area_qt = factor(ntile(area, 4), labels = c("Q1", "Q2", "Q3", "Q4")))
+rm(patch.sr,class.sr,patch.wr,class.wr)
 ```
 
+Get some summary statistics:
+
 ```{r}
-unique(factor(patch_metrics$source))
-summary(patch_metrics)
+class.sr_ %>%
+  group_by(source) %>%
+  summarize(
+    total_area_km2 = sum(total_area) * 0.01
+  ) %>%
+  ggplot(aes(x=reorder(source, total_area_km2), y=total_area_km2)) +
+  geom_bar(stat="identity", fill="light green") +
+  theme_light(12)
+```
+
+## Table X: Class-level statistics
+
+```{r}
+df1 <- class.sr_ %>%
+  group_by(source) %>%
+  summarize(
+    total_area_km2 = sum(total_area) * 0.01,
+    n_patch_total = sum(n_patch),
+    patch_density_mn = mean(patch_den)
+  )
+
+df2 <- patch.sr_ %>%
+  group_by(source) %>%
+  summarize(
+    patch_size_mn = mean(area),
+    per_ar_r_mn = mean(perimeter_area_ratio)
+  )
+
+df <- left_join(df1,df2,by="source")
+head(df)
+
+rm(df1,df2)
+
+# Make a tidy table
+# Set font name for table
+fontname <- "Times New Roman"
+# Clean up extra rows and digits
+cleaned <- df %>%
+ mutate_if(is.double, ~ round(., digits = 2)) %>%
+ # Sort from fastest to slowest
+ arrange(total_area_km2)
+# Fix names and add units
+names(cleaned) <- c("Data Source","Total Area (Km2)","Number of Patches","Patch Density",
+                    "Average Patch Size (ha)","Average Perimeter/Area Ratio")
+# Create the flextable
+ft <- flextable::flextable(cleaned) %>%
+  flextable::font(fontname = fontname, part = "all") %>%
+  flextable::autofit() %>% 
+  flextable::fit_to_width(7.5)
+ft
+print(ft, preview = "docx")
+
+```
+
+Plot the total area box plot across spatial blocks for the Southern Rockies:
+
+```{r fig.width=6.5, fig.height=3.5}
+
+# Combine the White River NF and SRME to plot patch statistics
+df <- bind_rows(patch.sr_,patch.wr_)
+# Plot facet wrap of patch size
+df <- df %>%
+  group_by(source,region) %>%
+  summarize(
+    patch_size = mean(area),
+    per_ar_r = mean(perimeter_area_ratio)
+  ) 
+glimpse(df)
+
+# Get the class metrics in the same format
+df2 <- bind_rows(class.sr_,class.wr_) %>%
+  group_by(source,region) %>%
+  summarize(
+    patch_den = mean(patch_den)
+  )
+
+df_ <- left_join(df,df2,by=c("region","source"))
+
+# Pivot longer
+
+metric_labels <- c(patch_size = "Patch Size (ha)",
+                   per_ar_r = "Perimeter-Area Ratio",
+                   patch_den = "Patch Density")
+
+df.long <- df_ %>%
+  pivot_longer(cols = c(contains("_")),
+               names_to = "metric",
+               values_to = "value") %>%
+  mutate(region = if_else(region=="srme","Southern Rockies","White River NF"),
+         source = if_else(source=="Sentinel-based Map","Sentinel-based",source),
+         source = factor(source, levels = rev(levels(reorder(source, value)))))
+
+df.long$source <- factor(df.long$source,levels=c('Sentinel-based', 'LANDFIRE EVT', 'USFS TreeMap', 'USFS ITSP'))
+
+cols <- c("#005a32","#a1d99b")
+
+# Grouped bar chart
+f7 <- ggplot(data=df.long, aes(x=source, y=value, fill=factor(region))) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  scale_fill_manual(values=cols) +
+  facet_wrap(~metric, scales = "free_y", labeller = labeller(metric = metric_labels)) + # Faceting by summary variable
+  labs(x="", y="Value", fill="Region") + # Adding labels
+  theme_bw(10) +
+  theme(legend.position = "top") +
+  theme(axis.text.x = element_text(angle=45, hjust=1)) # Improving readability of x-axis labels
+f7
+
+ggsave(f7, file = "../../figures/Figure7_Landscape_Summaries.png", dpi=300)
+
+
 ```
 
 Calculate some grouped statistics (to compare with the class metrics results)

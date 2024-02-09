@@ -59,69 +59,50 @@ blocks <- st_read("data/spatial/mod/boundaries/spatial_block_grid_50km2_count_s2
 # Landscape Patch Analysis #
 ############################
 
-ls_dir <- 'data/tabular/mod/results/ls_metrics'
 # Southern Rockies
+
+ls_dir <- 'data/tabular/mod/results/ls_metrics/patch'
 ls_patch_files.sr <- list.files(
   path = ls_dir, 
   pattern = "srme", 
   full.names = TRUE)
 
+ls_dir <- 'data/tabular/mod/results/ls_metrics/class'
+# Southern Rockies
+ls_class_files.sr <- list.files(
+  path = ls_dir, 
+  pattern = "srme", 
+  full.names = TRUE)
+
+# Load into a data frame
+patch.sr <- bind_rows(map(ls_patch_files.sr, read_csv))
+class.sr <- bind_rows(map(ls_class_files.sr, read_csv))
+
+
 # White River NF
+
+ls_dir <- 'data/tabular/mod/results/ls_metrics/patch'
+# Southern Rockies
 ls_patch_files.wr <- list.files(
   path = ls_dir, 
   pattern = "wrnf", 
   full.names = TRUE)
 
+ls_dir <- 'data/tabular/mod/results/ls_metrics/class'
+# Southern Rockies
+ls_class_files.wr <- list.files(
+  path = ls_dir, 
+  pattern = "wrnf", 
+  full.names = TRUE)
+
 # Load into a data frame
-patch.sr <- bind_rows(map(ls_patch_files.sr, read_csv))
 patch.wr <- bind_rows(map(ls_patch_files.wr, read_csv))
+class.wr <- bind_rows(map(ls_class_files.wr, read_csv))
 
 
-# # Reference data (LFEVT, TreeMap, ITSP)
-#
-# # LANDFIRE
-# ls_ptch_evt <- read.csv("data/tabular/mod/results/ls_metrics/lc16_evt_srme_aspen_r01_utm_patch_metrics.csv") %>%
-#   mutate(source = "LFEVT")
-# ls_cls_evt <- read.csv("data/tabular/mod/results/ls_metrics/lc16_evt_srme_aspen_r01_utm_class_metrics.csv") %>%
-#   mutate(source = "LFEVT")
-#
-# # ITSP (basal area > 0)
-# ls_ptch_itsp <- read.csv("data/tabular/mod/results/ls_metrics/itsp_aspen_srme_r1__patch_metrics.csv") %>%
-#   mutate(source = "ITSP")
-# ls_cls_itsp <- read.csv("data/tabular/mod/results/ls_metrics/itsp_aspen_srme_r1__class_metrics.csv") %>%
-#   mutate(source = "ITSP")
-#
-# # USFS TreeMap
-# ls_ptch_treemap <- read.csv("data/tabular/mod/results/ls_metrics/treemap16_spcd_746_int_patch_metrics.csv") %>%
-#   mutate(source = "TreeMap")
-# ls_cls_treemap <- read.csv("data/tabular/mod/results/ls_metrics/treemap16_spcd_746_int_class_metrics.csv") %>%
-#   mutate(source = "TreeMap")
-#
-# # Create one data frame for the landscape metrics
-#
-# # Patch metrics
-# patch_metrics <- ls_ptch_evt %>%
-#   bind_rows(ls_ptch_itsp) %>%
-#   bind_rows(ls_ptch_treemap) %>%
-#   bind_rows(ls_ptch_10m) %>%
-#   bind_rows(ls_ptch_30m)
-#
-# # Class metrics
-# class_metrics <- ls_cls_evt %>%
-#   bind_rows(ls_cls_itsp) %>%
-#   bind_rows(ls_cls_treemap) %>%
-#   bind_rows(ls_cls_10m) %>%
-#   bind_rows(ls_cls_30m)
-#
-# # Clean up !
-# rm(
-#   ls_ptch_evt,ls_cls_evt,ls_ptch_itsp,ls_cls_itsp,
-#   ls_ptch_treemap,ls_cls_treemap,
-#   ls_ptch_10m,ls_ptch_30m,ls_cls_10m,ls_cls_30m
-# )
-#
-#
-# Agreement assessment
+########################
+# Agreement assessment #
+########################
 
 # Global
 
