@@ -806,9 +806,7 @@ gc()
 
 # Spatial Agreement and Landscape Patch Dynamics
 
-## Figure 7: Spatial Agreement
-
-Load the accuracy assessment (comparison of F1-score from the test data).
+## Table X: Accuracy of the reference datasets based on test data
 
 ```{r message=F}
 ref_acc <- read_csv('../../data/tabular/mod/results/best_model/southern_rockies_ref_accmeas.csv',
@@ -817,16 +815,65 @@ head(ref_acc)
 
 # Create a tidy table
 df <- ref_acc %>%
-  filter(metric == "Predicted")
+  filter(metric == "Predicted") %>%
+  select(reference,precision, recall, f1_score)
 head(df)
+
+# Create a tidy table
+
+# Set font name for table
+fontname <- "Times New Roman"
+
+# Clean up extra rows and digits
+cleaned <- df %>%
+ mutate_if(is.double, ~ round(., digits = 4)) %>%
+ # Sort from fastest to slowest
+ arrange(desc(f1_score))
+
+# Fix names and add units
+names(cleaned) <- c("Data Source","Precision","Recall","F1-score")
+
+# Create the flextable
+ft <- flextable::flextable(cleaned) %>%
+  flextable::font(fontname = fontname, part = "all") %>%
+  flextable::autofit() %>% 
+  flextable::fit_to_width(7.5)
+ft
+print(ft, preview = "docx")
 
 rm(df,ref_acc)
 ```
 
+## Figure 7: Spatial Agreement (pixel-based)
 
 ```{r}
+aggr.sr <- aggr.sr %>%
+  mutate(source = if_else(source == "usfs_treemap16_balive_int_bin_srme_10m", "USFS TreeMap", source))
+glimpse(aggr.sr)
+```
 
-cols <- c("#4DAF4A", "#984EA3", "#FF7F00")
+Remove blocks with little to no aspen forest cover. First look at the distribution of aspen forest cover across spatial blocks.
+
+```{r warning=F, message=F}
+
+# Plot the distribution of aspen area
+blocks %>%
+  st_set_geometry(NULL) %>%
+  as_tibble() %>%
+  mutate(s2aspen_sum = as.integer(s2aspen_sum)) %>%
+  ggplot(aes(x=s2aspen_sum)) +
+  scale_x_continuous(trans="log") +
+  geom_histogram() +
+  theme_minimal(12)
+
+# Filter out non-aspen blocks
+blocks_aspen <- blocks %>%
+  filter(s2aspen_sum > 100000)
+
+```
+
+```{r message=F, fig.width = 6.5, fig.height = 3.25}
+
 flabs <- c(precision = "Precision", recall = "Recall", f1 = "F1-score")
 
 # Reshape the agreement table for plotting facet wrap
@@ -836,44 +883,55 @@ aggr.sr.m <- reshape2::melt(
   aggr.sr, id.vars = c("blocksize", "source", "region", "block"), 
   measure.vars = c("precision", "recall", "f1"), variable.name = "statistic"
 ) %>%
-  na.omit()
+  na.omit() %>%
+  filter(blocksize == 1,
+         block %in% blocks_aspen$id)
 
 # White River NF
 aggr.wr.m <- reshape2::melt(
   aggr.wr, id.vars = c("blocksize", "source", "region"), 
   measure.vars = c("precision", "recall", "f1"), variable.name = "statistic"
 ) %>%
-  na.omit()
+  na.omit() %>%
+  filter(blocksize == 1)
 
 # Facet wrap plot of the statistics by block group
 
 f7 <- ggplot(data=aggr.sr.m, aes(x=factor(blocksize), y=value, fill=factor(source))) +
   geom_boxplot(position = position_dodge()) + 
-  # geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value)) +
-  scale_fill_manual(values=cols, labels=c("LANDFIRE EVT","USFS TreeMap","USFS ITSP"), name="Source: ") +
+  scale_fill_viridis_d(labels=c("LANDFIRE EVT","USFS TreeMap","USFS ITSP"), name="",
+                       breaks=c("LANDFIRE EVT", "USFS TreeMap", "USFS ITSP")) +
   facet_wrap(~statistic, labeller = labeller(statistic = flabs)) +
-  theme_light(11) +
-  theme(legend.position = "top",
+  theme_bw(11) +
+  theme(legend.position = "bottom",
         legend.box = "vertical",
         legend.justification = c(0.5,0.5), # Left-aligns the legends
-        legend.spacing.y = unit(-10, "pt"), # Adjusts the gap between the legends
-        legend.text = ggtext::element_markdown(halign = 0), # This aligns each individual legend's text to the left
-        axis.title = element_text(size=12,face="italic"),
-        text = element_text(family = "Arial")) +
-  labs(x="Blocksize",y="Value")
+        legend.spacing.y = unit(-5, "pt"), # Adjusts the gap between the legends
+        # legend.text = ggtext::element_markdown(halign = 0), # This aligns each individual legend's text to the left
+        axis.title.x=element_blank(),  # Remove x axis title
+        axis.text.x=element_blank(),   # Remove x axis text
+        axis.ticks.x=element_blank(),  # Remove x axis ticks
+        axis.title = element_text(size=11,face="italic")) +
+        # text = element_text(family = "Times New Roman")) +
+  labs(x="Blocksize", y="Value")
+
+# Add the WRNF statistics
+f7 <- f7 +
+  geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value, group=factor(source)),
+             position=position_dodge(0.75), shape=18, size=4, color="white") +
+  # Then add the actual point in black
+  geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value, group=factor(source)),
+             position=position_dodge(0.75), shape=18, size=3, color="black") +
+  scale_shape_manual(name="Subregion", values=c("White River NF" = 8)) +
+  guides(
+    fill=guide_legend(override.aes=list(shape=NA)), # No shape in the fill legend
+    shape=guide_legend(title=" ", override.aes=list(color="black")) # Shape legend for Subregion
+  )
 f7
 
-# # Add the WRNF statistics
-# f7 <- f7 +
-#   # Plot the WRNF points on top as a different shape
-#   geom_point(data=aggr.wr.m, aes(x=factor(blocksize), y=value, shape=region), 
-#              position = position_dodge(width = 0.75), size = 3, color="black") +
-#   scale_shape_manual(name="Subregion", values=c("White River NF" = 8)) +
-#   guides(
-#     fill=guide_legend(override.aes=list(shape=NA)), # No shape in the fill legend
-#     shape=guide_legend(title="Subregion", override.aes=list(color="black")) # Shape legend for Subregion
-#   )
-# f7
+# Save out
+ggsave(f7, file = "../../figures/Figure7_Agreement_Box.png",
+       dpi = 300, bg="white") # adjust dpi accordingly
 ```
 ```{r}
 # Add a spatial map of statistics by blocks
@@ -884,7 +942,7 @@ blocks_ <- blocks %>%
   pivot_longer(cols = c(precision, recall, f1), names_to = "statistic", values_to = "value") %>%
   na.omit()
 
-ggplot(data = blocks_) +
+f7b <- ggplot(data = blocks_) +
   geom_sf(aes(fill = value)) +
   geom_sf(data=srme, fill=NA, color="grey20", linewidth=0.4) +
   facet_grid(source ~ statistic) +
@@ -897,8 +955,27 @@ ggplot(data = blocks_) +
   guides(fill = guide_colourbar(direction = "horizontal", barwidth = 10, barheight = 0.60,
                                 ticks=F, title.position = "left"),
          label.theme = element_text(angle = 0, size = 9)) +
-  labs(fill="")
+  labs(fill="", tag="B")
+f7b
 
+# Save out
+ggsave(f7b, file = "../../figures/Figure7_Agreement_Maps.png",
+       dpi = 300, bg="white") # adjust dpi accordingly
+```
+
+Join the two plots.
+
+```{r}
+
+f7 <- f7 + theme(plot.margin = unit(c(0.5, 10, 0.5, 0.5),"mm")) # Add right margin to the left plot
+f7b <- f7b + theme(plot.margin = unit(c(0.5, 0.5, 10, 0.5),"mm")) # Add left margin to the right plot
+
+arr7 <- ggarrange(f7, f7b, ncol=2, align="h", widths = c(1.5,1))
+arr7
+
+# Save out
+ggsave(arr7, file = "../../figures/Figure7_Agreement_Box_Maps_Arr.png",
+       dpi = 300, bg="white") # adjust dpi accordingly
 ```
 
 
@@ -986,6 +1063,15 @@ gc()
 ```
 
 ## Figure 8: Landscape Patch Dynamics
+
+```{r}
+# List csv file paths for the Southern Rockies
+maindir <- '../../data/tabular/results/ls_metrics'
+grids_list <- list.files(path = paste0(maindir), 
+                         pattern = "\\.csv$", 
+                         full.names = TRUE, 
+                         recursive = TRUE)
+```
 
 ```{r}
 unique(factor(patch_metrics$source))
