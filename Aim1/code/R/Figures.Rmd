@@ -1401,11 +1401,14 @@ phenology.md <- phenology %>%
   summarise(across(starts_with("doy"), median, na.rm=T))
 
 # Join to the spatial data and pivot longer
-
 grid.l <- grid %>% 
   left_join(phenology.md, by="grid_id") %>%
-    pivot_longer(cols = starts_with("doy"), names_to = "metric", values_to = "value") %>%
-  filter(treemap_pct > 0.05)
+  pivot_longer(cols = starts_with("doy"), names_to = "metric", values_to = "value") %>%
+  filter(treemap_pct > 0.05) # Keep only blocks with some aspen cover
+
+ordered_metrics <- c(
+  "doy_green_inc","doy_midgreenup","doy_green_max",
+  "doy_green_dec","doy_midsenescence","doy_green_min") 
 
 # Tidy the names for plotting
 metric_names <- c(
@@ -1417,18 +1420,22 @@ metric_names <- c(
   doy_green_min = "Onset Greenness Minimum"
 )
 
-grid.l$metric <- factor(
-  grid.l$metric, 
-  levels = ordered_metrics, 
-  labels = metric_names
-)
+# Fix the factor levels and labels
+grid.l$metric <- factor(grid.l$metric, levels = ordered_metrics, labels = metric_names)
+
+head(grid.l)
+```
+
+```{r fig.width=2.4, fig.height=5}
 
 metrics <- unique(grid.l$metric)
 
 plots <- list()
 
 for (m in metrics){
+  # Filter for the metric
   gdf <- grid.l %>% filter(metric == m)
+  
   # Map
   p <- ggplot() +
     geom_sf(data=grid, fill=NA) +
@@ -1439,16 +1446,19 @@ for (m in metrics){
     labs(fill="", title=m) +
     theme_void(12) +
     theme(legend.position = "right",
-          legend.text = element_text(angle = 45, size=9),   # Ensure labels are not rotated
-          plot.title = element_text(hjust = 0.5, size=10)
+          legend.text = element_text(angle = 0, size=9),   # Ensure labels are not rotated
+          plot.title = element_text(hjust = 0.5, size=10),
+          plot.margin = ggplot2::margin(0.1, 5, 0.1, 5, "mm")
     ) + 
     guides(fill = guide_colourbar(
       barwidth = 0.5, 
-      barheight = 8, 
+      barheight = 6, 
       ticks = FALSE,
       label.position = "right", 
       label.theme = element_text(size = 8))
     )
+  # Save the individual map
+  ggsave(p, file=paste0("../../figures/FigureS1B_Phenology_by_Elevation",m,".png"), dpi=300)
   print(p)
   plots[[m]] <- p
 }
@@ -1457,40 +1467,67 @@ for (m in metrics){
 
 Create a combined plot for four metrics.
 
-```{r fig.width=5, fig.height=5.5}
+```{r fig.width=6.75, fig.height=6.5}
+
 fs1a <- ggarrange(plots[[1]], plots[[3]], plots[[2]], plots[[6]],
-                  ncol = 2, nrow = 2, widths=c(1,1), heights=c(1,1),
-                  align = "hv") + 
-  labs(tag="A")
+                  ncol = 2, nrow = 2, widths=c(1,1,1,1), heights=c(1,1,1,1),
+                  align = "hv", labels = c("A","B","C","D"))
 fs1a
+ggsave(fs1a, file="../../figures/FigureS1A_PhenologyMaps.png", dpi=300)
+
 ```
 
 
 Plot the relationship with elevation across metrics.
 
-```{r message=F, warning=F, fig.width=5.5, fig.height=4.5}
+```{r message=F, warning=F}
 
-(fs1c <- ggplot(data=grid.l, aes(x=value,y=elevation_mn)) +
+metrics <- c("Mid Greenup Phase", "Onset Greenness Decrease", "Mid Senescence Phase", "Onset Greenness Minimum")
+
+df <- grid.l %>% filter(metric %in% metrics)
+
+# Individual plots
+for (m in metrics){
+  # Filter for the metric
+  gdf <- grid.l %>% filter(metric == m)
+  
+  # Map
+  p <- ggplot(data=gdf, aes(x=value,y=elevation_mn)) +
+    geom_smooth(method="lm",colour="gray40", fill="gray70", size=0.5) +
+    geom_point(size=0.4) +
+    theme_bw(7) +
+    theme(axis.text = element_blank(),
+          axis.title = element_text(size=6),
+          axis.ticks = element_blank()) +
+    labs(x="Day of Year",y="Elevation")
+  ggsave(p, file=paste0("../../figures/FigureS1B_Phenology_by_Elevation_",m,".png"), width=1.5, height=1.5)
+  print(p)
+}
+
+# Facet plot
+(fs1b <- ggplot(data=df, aes(x=value,y=elevation_mn)) +
   geom_smooth(method="lm",colour="gray40", fill="gray70", size=0.8) +
   geom_point(size=0.8) +
-  facet_wrap(~metric, scales="free_x") +
-  theme_light(12) +
+  facet_wrap(~metric, scales="free_x", nrow=2) +
+  theme_minimal(12) +
   theme(plot.title = element_text(size=10),
         axis.text = element_text(size=8),
         axis.title = element_text(size=10),
-        strip.text = element_text(size=8)) +
+        strip.text = element_text(size=8),
+        panel.spacing = unit(2.5, "mm")) +
   labs(x="Day of Year",y="Elevation", tag="B"))
 
 # Save out
-ggsave(fs1c, file="../../figures/FigureS1C_Phenology_by_Elevation.png", dpi=300)
+ggsave(fs1b, file="../../figures/FigureS1B_Phenology_by_Elevation.png", dpi=300)
 
+rm(metrics,df)
 
 ```
 
 Merge the two plots.
 
-```{r fig.width=5.5, fig.height=7.5}
-(fs1 <- ggarrange(fs1a, fs1c, nrow=2, ncol=1, widths = c(0.6, 1), heights = c(1, 0.7)))
+```{r fig.width=4.5, fig.height=5}
+(fs1 <- ggarrange(fs1a, fs1b, nrow=2, ncol=1, align="v"))
 ggsave(fs1, file="../../figures/FigureS1_Phenology.png", dpi=300)
 ```
 
@@ -1546,77 +1583,6 @@ ggplot(phenology.l, aes(x=factor(year), y=doy, fill=metric)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
         legend.position = "top")
 ```
-
-```{r}
-
-# Spatial map(s) of key phenological metrics
-
-breaks_dates <- as.Date(c("2020-01-01", "2021-01-01", "2022-01-01"))
-breaks_numeric <- as.numeric(breaks_dates)  # Convert to numeric (days since 1970-01-01, by default)
-labels_dates <- format(breaks_dates, "%Y-%m-%d")
-
-p1 <- ggplot(data=blocks) +
-  geom_sf(aes(fill=Maturity_1)) +
-  scale_fill_continuous(low = "lightgreen", high = "darkgreen",
-                        labels = function(x) format(as.Date(as.numeric(x), origin="1970-01-01"), "%B %d")) +
-  geom_sf(data=srme,fill=NA,color="black",size=2.5) +
-  labs(fill="Maturity") +
-  guides(fill = guide_colourbar(barwidth = 0.5, barheight = 5.5, ticks=F,
-                                 label.position = "right", title.position = "top",
-                                 label.theme = element_text(angle = 0, size = 8))) +
-  theme_void()
-
-p2 <- ggplot(data=blocks) +
-  geom_sf(aes(fill=Dormancy_1)) +
-  scale_fill_continuous(low = "#ffffd4", high = "#993404",
-                        labels = function(x) format(as.Date(as.numeric(x), origin="1970-01-01"), "%B %d")) +
-  geom_sf(data=srme,fill=NA,color="black",size=2.5) +
-  labs(fill="Dormancy") +
-  guides(fill = guide_colourbar(barwidth = 0.5, barheight = 5.5, ticks=F,
-                                 label.position = "right", title.position = "top",
-                                 label.theme = element_text(angle = 0, size = 8))) +
-  theme_void()
-
-ggarrange(p1,p2)
-
-# # Add a statistics column for legend (could do this for F1 too ...)
-# blocks.m <- reshape2::melt(
-#   blocks, id.vars = c("id","elevation_mn"), 
-#   measure.vars = c("Greenup_1","MidGreenup_1","Maturity_1","Peak_1",
-#                    "MidGreendown_1","Senescence_1","Dormancy_1"), variable.name = "metric"
-# )
-
-# Add a statistics column for legend (could do this for F1 too ...)
-blocks.m <- reshape2::melt(
-  blocks, id.vars = c("id","elevation_mn"), 
-  measure.vars = c("Greenup_1","Maturity_1","Peak_1","Dormancy_1"), variable.name = "metric"
-) %>%
-  mutate(metric = as.character(metric),
-         metric = as.factor(recode(metric,
-                         "Greenup_1" = "Greenup",
-                         "Maturity_1" = "Maturity",
-                         "Peak_1" = "Peak Greenness",
-                         "Dormancy_1" = "Dormancy")))
-  
-blocks.m$metric <- factor(blocks.m$metric, levels=c('Greenup', 'Maturity', 'Peak Greenness', 'Dormancy'))
-
-head(blocks.m)
-
-# Dot plot of phenology metric by elevation for all blocks
-
-(p5 <- ggplot(data=blocks.m, aes(x=value,y=elevation_mn)) +
-  geom_smooth(method="lm",colour="gray40", fill="gray70", size=0.8) +
-  geom_point(size=1.2) +
-  facet_wrap(~metric, scales="free_x") +
-  theme_light(12) +
-    labs(x="Date",y="Elevation"))
-
-(p6 <- ggplot(data=blocks.m, aes(x=value,y=elevation_mn,color=metric)) +
-  geom_point(size=1.2) +
-  theme_light(12))
-
-```
-
 
 ROC, F1, MCC:
 
