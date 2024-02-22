@@ -16,6 +16,8 @@ library(caret)
 library(ROCR)
 library(RColorBrewer)
 library(viridis)
+library(patchwork) 
+library(grid)
 
 # Install and load the pracma package if you haven't
 if(!require(pracma)) {

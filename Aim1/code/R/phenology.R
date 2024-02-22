@@ -3,7 +3,7 @@ library(tidyverse)
 library(lubridate)
 library(sf)
 
-# Load the grids, keep the elevation attribute
+# Load the grids, keep the elevation attribute and TreeMap sum (aspen area)
 grid <- st_read('data/spatial/mod/boundaries/spatial_block_grid_50km2.gpkg') %>%
   select(grid_id,elevation_mn,treemap_sum)
 glimpse(grid)
