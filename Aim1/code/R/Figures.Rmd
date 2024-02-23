@@ -1426,7 +1426,7 @@ grid.l$metric <- factor(grid.l$metric, levels = ordered_metrics, labels = metric
 head(grid.l)
 ```
 
-```{r fig.width=2.4, fig.height=5}
+```{r}
 
 metrics <- unique(grid.l$metric)
 
@@ -1467,13 +1467,36 @@ for (m in metrics){
 
 Create a combined plot for four metrics.
 
-```{r fig.width=6.75, fig.height=6.5}
+```{r message=F, fig.width=7, fig.height=6.5}
 
-fs1a <- ggarrange(plots[[1]], plots[[3]], plots[[2]], plots[[6]],
+# Create one map with a scale bar and north arrow
+
+arrow <- ggspatial::north_arrow_minimal(
+  line_width = 1,
+  line_col = "black",
+  fill = "black",
+  text_col = "black",
+  text_family = "",
+  text_face = NULL,
+  text_size = 8
+)
+
+p1 <- plots[[1]] + 
+  ggspatial::annotation_scale(location = "bl", width_hint = 0.25, pad_x = unit(-0.01,"in"),
+                              text_cex=0.6) + 
+  ggspatial::annotation_north_arrow(location = "bl", which_north = "true", 
+                                    pad_x = unit(0.1, "in"), pad_y = unit(0.3, "in"),
+                                    height=unit(0.3,"in"), width=unit(0.3,"in"),
+                                    style=arrow) 
+  
+
+fs1a <- ggarrange(p1, plots[[3]], plots[[2]], plots[[6]],
                   ncol = 2, nrow = 2, widths=c(1,1,1,1), heights=c(1,1,1,1),
                   align = "hv", labels = c("A","B","C","D"))
 fs1a
 ggsave(fs1a, file="../../figures/FigureS1A_PhenologyMaps.png", dpi=300)
+
+rm(p1)
 
 ```
 
