@@ -769,7 +769,7 @@ gc()
 
 # Spatial Agreement and Landscape Patch Dynamics
 
-## Table X: Accuracy of the reference datasets based on test data
+## Table 4: Accuracy of the reference datasets based on test data
 
 ```{r message=F}
 ref_acc <- read_csv('../../data/tabular/mod/results/best_model/southern_rockies_ref_accmeas.csv',
@@ -802,7 +802,7 @@ ft <- flextable::flextable(cleaned) %>%
   flextable::autofit() %>% 
   flextable::fit_to_width(7.5)
 ft
-print(ft, preview = "docx")
+# print(ft, preview = "docx")
 
 rm(df,ref_acc)
 ```
@@ -831,7 +831,7 @@ blocks %>%
 
 # Filter out non-aspen blocks
 blocks_aspen <- blocks %>%
-  filter(s2aspen_sum > 100000)
+  filter(s2aspen_sum > 10000)
 
 ```
 
@@ -896,7 +896,7 @@ f7
 ggsave(f7, file = "../../figures/Figure7_Agreement_Box.png",
        dpi = 300, bg="white") # adjust dpi accordingly
 ```
-```{r}
+```{r message=F, fig.height=6, fig.width=4}
 # Add a spatial map of statistics by blocks
 blocks_ <- blocks %>%
   mutate(id = as.numeric(id)-1) %>%
@@ -918,7 +918,7 @@ f7b <- ggplot(data = blocks_) +
   guides(fill = guide_colourbar(direction = "horizontal", barwidth = 10, barheight = 0.60,
                                 ticks=F, title.position = "left"),
          label.theme = element_text(angle = 0, size = 9)) +
-  labs(fill="", tag="B")
+  labs(fill="")
 f7b
 
 # Save out
@@ -926,71 +926,10 @@ ggsave(f7b, file = "../../figures/Figure7_Agreement_Maps.png",
        dpi = 300, bg="white") # adjust dpi accordingly
 ```
 
-Join the two plots.
-
-```{r}
-
-f7 <- f7 + theme(plot.margin = unit(c(0.5, 10, 0.5, 0.5),"mm")) # Add right margin to the left plot
-f7b <- f7b + theme(plot.margin = unit(c(0.5, 0.5, 10, 0.5),"mm")) # Add left margin to the right plot
-
-arr7 <- ggarrange(f7, f7b, ncol=2, align="h", widths = c(1.5,1))
-arr7
-
-# Save out
-ggsave(arr7, file = "../../figures/Figure7_Agreement_Box_Maps_Arr.png",
-       dpi = 300, bg="white") # adjust dpi accordingly
-```
-
-
-```{r}
-
-brewer.pal(n=5,"Set1")
-
-cols <- c("#4DAF4A", "#984EA3", "#FF7F00")
-
-glimpse(ref.global)
-
-# # Get an average f1 score table
-# f1mn <- ref.global %>%
-#   group_by
-
-# Add a statistics column for legend (could do this for F1 too ...)
-ref.global.m <- reshape2::melt(
-  ref.global, id.vars = c("blocksize", "source", "region"), 
-  measure.vars = c("prec", "rec"), variable.name = "statistic"
-)
-
-glimpse(ref.global.m)
-
-f7a <- ggplot(data=ref.global.m) +
-  geom_line(aes(x=blocksize,y=value,color=factor(source), linetype=statistic), linewidth=0.6) +
-  geom_point(data=ref.global, aes(x=blocksize, y=f1, color=source)) +
-  scale_x_continuous(breaks=c(1,3,5,7,9)) +
-  scale_linetype_manual(values = c("prec" = "dotted", "rec" = "solid"), name="Statistic: ",
-                        labels=c("Precision","Recall")) +
-  facet_wrap(~region, scales = "fixed") +
-  scale_color_manual(values=cols, labels=c("LANDFIRE EVT","USFS TreeMap","USFS ITSP"), name="Source: ") +
-  theme_light(14) +
-  ylim(0,1) +
-  theme(legend.position = "top",
-        legend.box = "vertical",
-        legend.justification = c(0.5,0.5), # Left-aligns the legends
-        legend.spacing.y = unit(-10, "pt"), # Adjusts the gap between the legends
-        legend.text = ggtext::element_markdown(halign = 0), # This aligns each individual legend's text to the left
-        axis.title = element_text(size=12,face="italic"),
-        text = element_text(family = "Arial")) +
-  labs(x="Blocksize (pixels)",y="Value")
-  
-f7a
-
-ggsave(f7a, file = "../../figures/Figure7_Global_PrecRec_Agreement.png", dpi=300)
-
-```
-
 Clean up! 
 
 ```{r}
-rm(ref.global,ref.global.m,f7a,f7b,f7,ref.focal)
+rm(f7b,f7,aggr.sr,aggr.sr.m,aggr.wr,aggr.wr.m,arr7,arrow,blocks_,blocks_aspen)
 gc()
 ```
 
@@ -1607,118 +1546,6 @@ ggplot(phenology.l, aes(x=factor(year), y=doy, fill=metric)) +
         legend.position = "top")
 ```
 
-ROC, F1, MCC:
-
-```{r}
-
-accmeas <- read_csv('../../data/tabular/mod/results/accmeas_prop.csv')
-
-# Calculate the averages for each cutoff value across model runs
-
-accmeas.mn <- accmeas %>%
-  mutate(cutoff = as.character(cutoff)) %>%
-  group_by(cutoff) %>%
-  summarise(
-    prMn = mean(prSize,na.rm=T), # size of presence data (mean)
-    prSd = sd(prSize,na.rm=T), # size of presence data (sd)
-    bgMn = mean(bgSize,na.rm=T), # size of background data (mean)
-    bgSd = sd(bgSize,na.rm=T), # size of background data (sd)
-    fprMn = mean(fpr,na.rm=T), # False Positive Rate (mean)
-    fprSd = sd(fpr,na.rm=T),
-    tprMn = mean(tpr,na.rm=T), # True Positive Rate (mean)
-    tprSd = sd(tpr,na.rm=T),
-    precision = mean(precision,na.rm=T), # precision (mean)
-    precisionSd = sd(precision,na.rm=T), 
-    recall = mean(recall,na.rm=T), # recall (mean)
-    recallSd = sd(recall,na.rm=T),
-    f1 = mean(f1,na.rm=T), # F1 score (mean)
-    f1Sd = sd(f1,na.rm=T),
-    gmean = mean(gmean,na.rm=T), # Geometric Mean (mean)
-    gmeanSd = sd(gmean,na.rm=T),
-    mcc = mean(mcc,na.rm=T), # Matthew's Correlation Coefficient (mean)
-    mccSd = sd(mcc,na.rm=T),
-    accuracy = mean(accuracy,na.rm=T), # Overall accuracy (mean)
-    accuracySd = sd(accuracy,na.rm=T)
-  ) %>%
-  ungroup() %>%
-  mutate(cutoff = round(as.double(cutoff),3))
-
-# Calculate optimum threshold based on F1 statistic
-
-cutoffOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$cutoff
-precisionOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$precision
-recallOptF1Mn = accmeas.mn[which.max(accmeas.mn$f1),]$recall
-fprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$fprMn
-tprOptMn = accmeas.mn[which.max(accmeas.mn$f1),]$tprMn
-max_f1 <- max(accmeas.mn$f1, na.rm = TRUE)
-
-```
-
-
-```{r warning=F, message=F}
-
-# ROC Curve and label the AUC value (approximation)
-
-# Get the AUC approx
-
-# Ensure data is sorted by FPR
-accmeas_mn_sorted <- accmeas.mn[order(accmeas.mn$fprMn), ]
-# Compute AUC using trapz function in 'pracma'
-auc_avg_approx <- trapz(accmeas_mn_sorted$fprMn, accmeas_mn_sorted$tprMn)
-
-fs2a <- ggplot(data=accmeas) +
-  geom_line(aes(x=fpr,y=tpr,color=factor(model)),linewidth=0.4) +
-  scale_color_viridis_d(option="turbo") +
-  geom_line(data=accmeas.mn, aes(x = fprMn, y = tprMn), color = "black", size = 0.8) +  # ROC curve average
-  scale_x_continuous(limits=c(0,1)) +  # Set x axis limits from 0 to 1
-  scale_y_continuous(limits=c(0,1)) +
-  labs(x='False Positive Rate', y='True Positive Rate', tag="A") +
-  geom_point(aes(x = fprOptMn, y = tprOptMn),
-             color = "red", size = 3, shape = 19) +  # optimal threshold point
-  geom_text(aes(x=fprOptMn, y=tprOptMn),
-            label = paste0('Optimal threshold: ', round(cutoffOptMn,3),'\nApprox. AUC: ', round(auc_avg_approx,3)),
-            nudge_x = 0.38, nudge_y = -0.08, size = 3.5) +
-  coord_fixed(ratio = 1) +  # to keep the x and y axes scales same
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +  # diagonal
-  theme_light() +
-  theme(legend.position = "none",
-        axis.title.y = element_text(size=11,face="italic",
-                                    margin = unit(c(0,0.4,0,0), "cm")),
-        axis.title.x = element_text(size=11,face="italic",
-                                    margin = unit(c(0.4,0,0,0), "cm")),
-        axis.text = element_text(size=10),
-        strip.text.x = element_text(size = 11))
-
-fs2b <- ggplot(data=accmeas) +
-  geom_line(aes(x=cutoff,y=f1,color=factor(model)),linewidth=0.4) +
-  scale_color_viridis_d(option="turbo") +
-  geom_line(data=accmeas.mn, aes(x=cutoff, y = f1), color = "black", size = 0.8) +  # ROC curve average
-  # geom_vline(xintercept=0.424, linetype="dashed", color="black") +
-  geom_point(aes(x=cutoffOptMn, y=max_f1),
-             color = "red", size = 3, shape = 19) +
-  geom_text(aes(x=cutoffOptMn, y=max_f1),
-            label = paste0('Optimal threshold: ', round(cutoffOptMn,3)),
-            nudge_x = 0.0, nudge_y = 0.08, size = 3.5) +
-  scale_x_continuous(limits=c(0,1)) +  # Set x axis limits from 0 to 1
-  scale_y_continuous(limits=c(0,1)) +
-  labs(x='Threshold', y='F1 Score', tag="B") +
-  coord_fixed(ratio = 1) +  # to keep the x and y axes scales same
-  theme_light() +
-  theme(legend.position = "none",
-        axis.title.y = element_text(size=11,face="italic",
-                                    margin = unit(c(0,0.4,0,0), "cm")),
-        axis.title.x = element_text(size=11,face="italic",
-                                    margin = unit(c(0.4,0,0,0), "cm")),
-        axis.text = element_text(size=10),
-        strip.text.x = element_text(size = 11))
-
-(fs2 <- ggarrange(fs2a,fs2b))
-
-ggsave(fs2, file="../../figures/FigureS2_AUC_F1Max.png", dpi=300)
-
-rm(fs2,fs2a,fs2b,accmeas_mn_sorted,auc_avg_approx)
-
-```
 
 Table S1: Performance metrics for the optimum cutoff value
 
