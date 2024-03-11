@@ -929,7 +929,7 @@ ggsave(f7b, file = "../../figures/Figure7_Agreement_Maps.png",
 Clean up! 
 
 ```{r}
-rm(f7b,f7,aggr.sr,aggr.sr.m,aggr.wr,aggr.wr.m,arr7,arrow,blocks_,blocks_aspen)
+rm(f7b,f7,blocks_,blocks_aspen)
 gc()
 ```
 
@@ -1079,6 +1079,71 @@ f7
 ggsave(f7, file = "../../figures/Figure7_Landscape_Summaries.png", dpi=300)
 
 
+```
+
+Calculate the difference in class statistics between the different sources:
+
+```{r}
+# Calculate the grouped statistics for the SR
+df <- bind_rows(class.sr_,class.wr_) %>%
+  group_by(source,region) %>%
+  summarize(
+    total_area_km2 = sum(total_area) * 0.01,
+    total_n_patch = sum(n_patch)
+  ) %>%
+  ungroup()
+head(df, 8)
+
+# Step 1: Filter out Sentinel-based map values
+sentinel_df <- df %>% 
+  filter(source == "Sentinel-based Map") %>%
+  rename(sentinel_area_km2 = total_area_km2,
+         sentinel_n_patch = total_n_patch) %>%
+  select(region,sentinel_area_km2,sentinel_n_patch)
+
+# Step 2: Join this with the original dataframe on region
+df <- df %>%
+  left_join(sentinel_df, by = "region")
+
+# Step 3: Calculate the percentage difference
+# Ensure that you're not comparing Sentinel-based map values with itself
+df <- df %>%
+  filter(source != "Sentinel-based Map") %>%
+  mutate(area_diff = (total_area_km2 - sentinel_area_km2) / sentinel_area_km2 * 100,
+         patch_diff = (total_n_patch - sentinel_n_patch) / sentinel_n_patch * 100)
+head(df)
+
+```
+
+Calculate the difference in patch statistics between the different sources:
+
+```{r}
+# Calculate the grouped statistics for the SR
+df <- bind_rows(patch.sr_,patch.wr_) %>%
+  group_by(source,region) %>%
+  summarize(
+    patch_size_mn = mean(area),
+    patch_size_sd = sd(area)
+  ) %>%
+  ungroup()
+head(df, 8)
+
+# Step 1: Filter out Sentinel-based map values
+sentinel_df <- df %>% 
+  filter(source == "Sentinel-based Map") %>%
+  rename(sentinel_patch_size_mn = patch_size_mn) %>%
+  select(region,sentinel_patch_size_mn)
+
+# Step 2: Join this with the original dataframe on region
+df <- df %>%
+  left_join(sentinel_df, by = "region")
+
+# Step 3: Calculate the percentage difference
+# Ensure that you're not comparing Sentinel-based map values with itself
+df <- df %>%
+  filter(source != "Sentinel-based Map") %>%
+  mutate(percentage_difference = (patch_size_mn - sentinel_patch_size_mn) / sentinel_patch_size_mn * 100)
+head(df)
 ```
 
 Calculate some grouped statistics (to compare with the class metrics results)
