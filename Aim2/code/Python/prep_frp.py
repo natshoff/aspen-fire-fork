@@ -6,9 +6,15 @@ Downloaded from the LAADS archive: https://firms.modaps.eosdis.nasa.gov/download
 Extract the total and percent area of aspen forest cover within observations
 """
 
+import os
 import pandas as pd
+import geopandas as gpd
 
-# Load the VIIRS shapefile with aspen attributes attached
+# Load the VIIRS archive shapefile
+frp_path = 'data/spatial/raw/VIIRS/DL_FIRE_SC-C2_361441/fire_archive_SV-C2_361441.shp'
+frp = gpd.read_file(frp_path)
+frp.head()
+
 frp = pd.read_csv("data/tabular/mod/TreeMap/treemap16_west_foresttype_vnp_plot.csv")
 print(frp.head())
 
