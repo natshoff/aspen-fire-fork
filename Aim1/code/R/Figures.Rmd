@@ -1019,7 +1019,7 @@ ft <- flextable::flextable(cleaned) %>%
   flextable::autofit() %>% 
   flextable::fit_to_width(7.5)
 ft
-print(ft, preview = "docx")
+# print(ft, preview = "docx")
 
 ```
 
