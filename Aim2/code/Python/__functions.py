@@ -4,12 +4,11 @@ maxwell.cook@colorado.edu
 """
 
 import pandas as pd
-import rasterio as rio
-import rioxarray as rxr
-import geopandas as gpd
 import numpy as np
 import gc
+import pytz
 
+from datetime import datetime
 from shapely.geometry import box
 from shapely.geometry import Polygon, MultiPolygon
 from rasterstats import zonal_stats
@@ -67,23 +66,49 @@ def compute_band_stats(geoms, image_da, id_col):
     return props
 
 
-def create_bounds(gdf, buffer=None):
-    """
-    Calculate a bounding rectangle for a given geometry and buffer
+def create_bounds(gdf, buffer=None, by_bounds=True):
+    """ Calculate a bounding rectangle for a given geometry and buffer """
+    if by_bounds is True:
+        geom = gdf.geometry.apply(lambda geo: box(*geo.bounds))
+        if buffer is not None:
+            geom = geom.buffer(buffer)
+        # Apply the new geometry
+        gdf_ = gdf.copy()
+        gdf_.geometry = geom.geometry.apply(
+            lambda geo: Polygon(geo) if geo.geom_type == 'Polygon' else MultiPolygon([geo]))
+        return gdf_
+    elif by_bounds is False:
+        if buffer is not None:
+            gdf_ = gdf.geometry.buffer(buffer)
+            return gdf_
+        else:
+            gdf_ = gdf.copy()
+            gdf_.geometry = gdf_.geometry.buffer(buffer)
+            return gdf_
 
-    Args:
-        gdf: the geometry for which to create bounds
-        buffer (optional): buffer distance to apply to bounds
-    """
-    bounds = gdf.geometry.apply(lambda geom: box(*geom.bounds))
-    if buffer is not None:
-        bounds = bounds.buffer(buffer)
-    # Assign the geometry to the geodataframe
-    gdf_ = gdf.copy()
-    gdf_.geometry = bounds.geometry.apply(
-        lambda geom: Polygon(geom) if geom.geom_type == 'Polygon' else MultiPolygon([geom])
-    )
-    return gdf_
+
+def convert_datetime(acq_date, acq_time):
+    """ Function to convert ACQ_DATE and ACQ_TIME to a datetime object in UTC """
+    # Ensure ACQ_TIME is in HHMM format
+    acq_time = str(acq_time) # force to string
+    if len(acq_time) == 3:
+        acq_time = '0' + acq_time
+    elif len(acq_time) == 2:
+        acq_time = '00' + acq_time
+    elif len(acq_time) == 1:
+        acq_time = '000' + acq_time
+
+    acq_date_str = acq_date.strftime('%Y-%m-%d')
+    dt = datetime.strptime(acq_date_str + acq_time, '%Y-%m-%d%H%M')
+    dt_utc = pytz.utc.localize(dt)  # Localize the datetime object to UTC
+    return dt_utc
+
+
+def weighted_variance(values, weights):
+    """ Calculate weighted variance. """
+    average = np.average(values, weights=weights)
+    variance = np.average((values - average) ** 2, weights=weights)
+    return variance
 
 
 def best_match(fired_perim, neighbors, max_date_diff=14, max_size_diff=50):
