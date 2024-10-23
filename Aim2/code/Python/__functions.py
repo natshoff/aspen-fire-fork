@@ -17,13 +17,15 @@ import warnings
 warnings.filterwarnings("ignore")  # suppresses annoying geopandas warning
 
  
-def compute_band_stats(geoms, image_da, id_col, ztype='categorical'):
+def compute_band_stats(geoms, image_da, id_col, attr=None, stats=None, ztype='categorical'):
     """
     Function to compute band statistics for geometries and a single raster band.
     Args:
         geoms: the geometries for which to calculate zonal statistics
         image_da: categorical raster image array
         id_col: the unique identifier for geometries
+        attr: the attribute to calculate (example, 'CBH_') for naming
+        stats: statistics to calculate (if continuous input data) as list of strings
         ztype: whether to treat raster data as categorical or continuous
     """
     affine = image_da.rio.transform()
@@ -31,7 +33,7 @@ def compute_band_stats(geoms, image_da, id_col, ztype='categorical'):
     arr = image_da.values
 
     if ztype == 'categorical':
-        stats = zonal_stats(
+        zs = zonal_stats(
             vectors=geoms[[id_col, 'geometry']],
             raster=arr,
             affine=affine,
@@ -42,7 +44,7 @@ def compute_band_stats(geoms, image_da, id_col, ztype='categorical'):
         )
 
         # Extract the results (properties)
-        stats_df = pd.DataFrame(stats)
+        stats_df = pd.DataFrame(zs)
         stats_df[id_col] = stats_df['properties'].apply(lambda x: x.get(id_col))
         stats_df['properties'] = stats_df['properties'].apply(
             lambda x: {key: val for key, val in x.items() if key != id_col})
@@ -50,12 +52,14 @@ def compute_band_stats(geoms, image_da, id_col, ztype='categorical'):
 
         # Explode the properties to column
         props = stats_df.explode('props_list').reset_index(drop=True)
-        props[['evt', 'count']] = pd.DataFrame(props['props_list'].tolist(), index=props.index)
+        props[['evt','count']] = pd.DataFrame(props['props_list'].tolist(), index=props.index)
 
         # Handle NaN values
         props.dropna(subset=['evt'], inplace=True)  # handle cases where EVT is NaN
+
+        # Tidy the columns.
         props['evt'] = props['evt'].astype(int)
-        props = props[[id_col, 'evt', 'count']].reset_index(drop=True)
+        props = props[[id_col,'evt','count']].reset_index(drop=True)
 
         # Calculate the total pixels and percent cover
         total_pixels = props.groupby(props[id_col])['count'].transform('sum')
@@ -68,7 +72,34 @@ def compute_band_stats(geoms, image_da, id_col, ztype='categorical'):
         return props
 
     elif ztype == 'continuous':
-        return props
+        # Make sure 'stats' is defined
+        if stats is None:
+            print("! Please provide list of statistics to calculate !")
+            return None
+        else:
+            zs = zonal_stats(
+                vectors=geoms[[id_col, 'geometry']],
+                raster=arr,
+                affine=affine,
+                nodata=nodataval,
+                stats=stats,
+                categorical=False,
+                all_touched=True,
+                geojson_out=True
+            )
+
+            # Extract the dataframe
+            stats_df = pd.DataFrame(zs)
+            stats_df[id_col] = stats_df['properties'].apply(lambda x: x.get(id_col))
+            for stat in stats:
+                stats_df[stat] = stats_df['properties'].apply(lambda x: x.get(stat))
+                stats_df.rename(columns={stat: f'{attr}_{stat}'}, inplace=True)
+
+            # Tidy the columns
+            cols_to_keep = [id_col] + [f'{attr}_{stat}' for stat in stats]
+            stats_df = stats_df[cols_to_keep]
+
+            return stats_df
 
 
 def create_bounds(gdf, buffer=None, method='bounds'):
