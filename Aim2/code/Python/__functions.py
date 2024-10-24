@@ -33,6 +33,10 @@ def compute_band_stats(geoms, image_da, id_col, attr=None, stats=None, ztype='ca
     arr = image_da.values
 
     if ztype == 'categorical':
+
+        if attr is None:
+            attr = 'evt'
+
         zs = zonal_stats(
             vectors=geoms[[id_col, 'geometry']],
             raster=arr,
@@ -52,14 +56,14 @@ def compute_band_stats(geoms, image_da, id_col, attr=None, stats=None, ztype='ca
 
         # Explode the properties to column
         props = stats_df.explode('props_list').reset_index(drop=True)
-        props[['evt','count']] = pd.DataFrame(props['props_list'].tolist(), index=props.index)
+        props[[attr,'count']] = pd.DataFrame(props['props_list'].tolist(), index=props.index)
 
         # Handle NaN values
-        props.dropna(subset=['evt'], inplace=True)  # handle cases where EVT is NaN
+        props.dropna(subset=[attr], inplace=True)  # handle cases where EVT is NaN
 
         # Tidy the columns.
-        props['evt'] = props['evt'].astype(int)
-        props = props[[id_col,'evt','count']].reset_index(drop=True)
+        props[attr] = props[attr].astype(int)
+        props = props[[id_col,attr,'count']].reset_index(drop=True)
 
         # Calculate the total pixels and percent cover
         total_pixels = props.groupby(props[id_col])['count'].transform('sum')
