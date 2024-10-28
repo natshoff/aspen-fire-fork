@@ -3,7 +3,7 @@ Helper functions for aspen intensity/severity work
 maxwell.cook@colorado.edu
 """
 
-import gc
+import gc, time
 import pandas as pd
 import numpy as np
 import pytz
@@ -266,3 +266,21 @@ def find_nearest(perims, points, nn, max_dist=50000, max_size_diff=150):
         out_nns = pd.DataFrame()
 
     return out_nns, no_matches
+
+
+def monitor_export(task, timeout=30):
+    """ Monitors EE export task """
+    while task.active():
+        print('Waiting for export to finish..\n\tPatience young padawan.')
+        time.sleep(timeout)  # Check every 30 seconds
+
+    # Get the status of the task
+    status = task.status()
+
+    # Check if the task failed or succeeded
+    if status['state'] == 'COMPLETED':
+        print("Export completed successfully !!!!")
+    elif status['state'] == 'FAILED':
+        print(f"Export failed! Bummer. Reason: {status.get('error_message', 'Unknown error')}")
+    else:
+        print(f"Export ended with state: {status['state']}")
