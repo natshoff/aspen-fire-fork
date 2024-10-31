@@ -3,7 +3,7 @@ Helper functions for aspen intensity/severity work
 maxwell.cook@colorado.edu
 """
 
-import gc, time
+import gc, time, os, glob
 import pandas as pd
 import numpy as np
 import pytz
@@ -16,7 +16,36 @@ from rasterstats import zonal_stats
 import warnings
 warnings.filterwarnings("ignore")  # suppresses annoying geopandas warning
 
- 
+
+def list_files(path, ext, recursive):
+    """
+    List files of a specific type in a directory or subdirectories
+    """
+    if recursive is True:
+        return glob.glob(os.path.join(path, '**', '*{}'.format(ext)), recursive=True)
+    else:
+        return glob.glob(os.path.join(path, '*{}'.format(ext)), recursive=False)
+
+
+def get_coords(geom, buffer):
+    """ Returns the bounding box coordinates for a given geometry(ies) and buffer """
+    _geom = geom.copy()
+    _geom['geometry'] = _geom.geometry.buffer(buffer)
+    bounds = _geom.to_crs('EPSG:4326').unary_union.envelope  # make sure it is in geographic coordinates
+    coords = list(bounds.exterior.coords)
+
+    # Calculate extent
+    min_lon = min([p[0] for p in coords])
+    max_lon = max([p[0] for p in coords])
+    min_lat = min([p[1] for p in coords])
+    max_lat = max([p[1] for p in coords])
+
+    extent = [min_lon, max_lon, min_lat, max_lat]
+
+    del _geom, bounds
+    return coords, extent
+
+
 def compute_band_stats(geoms, image_da, id_col, attr=None, stats=None, ztype='categorical'):
     """
     Function to compute band statistics for geometries and a single raster band.
@@ -142,7 +171,7 @@ def create_bounds(gdf, buffer=None, method='bounds'):
 def convert_datetime(acq_date, acq_time):
     """ Function to convert ACQ_DATE and ACQ_TIME to a datetime object in UTC """
     # Ensure ACQ_TIME is in HHMM format
-    acq_time = str(acq_time) # force to string
+    acq_time = str(acq_time)  # force to string
     if len(acq_time) == 3:
         acq_time = '0' + acq_time
     elif len(acq_time) == 2:
@@ -150,10 +179,20 @@ def convert_datetime(acq_date, acq_time):
     elif len(acq_time) == 1:
         acq_time = '000' + acq_time
 
-    acq_date_str = acq_date.strftime('%Y-%m-%d')
-    dt = datetime.strptime(acq_date_str + acq_time, '%Y-%m-%d%H%M')
-    dt_utc = pytz.utc.localize(dt)  # Localize the datetime object to UTC
-    return dt_utc
+    # Convert acq_date to datetime if it’s a string
+    if isinstance(acq_date, str):
+        acq_date = datetime.strptime(acq_date, '%m/%d/%y')  # Adjust format as needed
+        acq_time = str(acq_time).zfill(4)  # Pad to 4 characters
+        # Combine date and time
+        dt = datetime.strptime(acq_date.strftime('%Y-%m-%d') + acq_time, '%Y-%m-%d%H%M')
+        dt_utc = pytz.utc.localize(dt)  # Localize to UTC
+
+        return dt_utc
+    else:
+        acq_date_str = acq_date.strftime('%m/%d/%Y')
+        dt = datetime.strptime(acq_date_str + acq_time, '%Y-%m-%d%H%M')
+        dt_utc = pytz.utc.localize(dt)  # Localize the datetime object to UTC
+        return dt_utc
 
 
 def weighted_variance(values, weights):
