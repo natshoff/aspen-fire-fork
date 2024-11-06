@@ -27,6 +27,23 @@ def list_files(path, ext, recursive):
         return glob.glob(os.path.join(path, '*{}'.format(ext)), recursive=False)
 
 
+def convert_datetime(acq_date, acq_time):
+    """ Function to convert ACQ_DATE and ACQ_TIME to a datetime object in UTC """
+    # Ensure ACQ_TIME is in HHMM format
+    acq_time = str(acq_time).zfill(4)  # Pad to 4 digits if necessary
+
+    # Convert acq_date to a string in the format '%Y-%m-%d'
+    if isinstance(acq_date, str):
+        acq_date = datetime.strptime(acq_date, '%m/%d/%Y')  # Adjust based on input format
+
+    acq_date_str = acq_date.strftime('%Y-%m-%d')
+    dt = datetime.strptime(acq_date_str + acq_time, '%Y-%m-%d%H%M')
+
+    # Localize the datetime object to UTC
+    dt_utc = pytz.utc.localize(dt)
+    return dt_utc
+
+
 def get_coords(geom, buffer):
     """ Returns the bounding box coordinates for a given geometry(ies) and buffer """
     _geom = geom.copy()
@@ -166,33 +183,6 @@ def create_bounds(gdf, buffer=None, method='bounds'):
             gdf_ = gdf.copy()
             gdf_.geometry = gdf_.geometry.buffer(buffer)
             return gdf_
-
-
-def convert_datetime(acq_date, acq_time):
-    """ Function to convert ACQ_DATE and ACQ_TIME to a datetime object in UTC """
-    # Ensure ACQ_TIME is in HHMM format
-    acq_time = str(acq_time)  # force to string
-    if len(acq_time) == 3:
-        acq_time = '0' + acq_time
-    elif len(acq_time) == 2:
-        acq_time = '00' + acq_time
-    elif len(acq_time) == 1:
-        acq_time = '000' + acq_time
-
-    # Convert acq_date to datetime if it’s a string
-    if isinstance(acq_date, str):
-        acq_date = datetime.strptime(acq_date, '%m/%d/%y')  # Adjust format as needed
-        acq_time = str(acq_time).zfill(4)  # Pad to 4 characters
-        # Combine date and time
-        dt = datetime.strptime(acq_date.strftime('%Y-%m-%d') + acq_time, '%Y-%m-%d%H%M')
-        dt_utc = pytz.utc.localize(dt)  # Localize to UTC
-
-        return dt_utc
-    else:
-        acq_date_str = acq_date.strftime('%m/%d/%Y')
-        dt = datetime.strptime(acq_date_str + acq_time, '%Y-%m-%d%H%M')
-        dt_utc = pytz.utc.localize(dt)  # Localize the datetime object to UTC
-        return dt_utc
 
 
 def weighted_variance(values, weights):
