@@ -6,9 +6,9 @@ maxwell.cook@colorado.edu
 import gc, time, os, glob
 import pandas as pd
 import numpy as np
-import pytz
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from shapely.geometry import box
 from shapely.geometry import Polygon, MultiPolygon
 from rasterstats import zonal_stats
@@ -27,7 +27,7 @@ def list_files(path, ext, recursive):
         return glob.glob(os.path.join(path, '*{}'.format(ext)), recursive=False)
 
 
-def convert_datetime(acq_date, acq_time):
+def convert_datetime(acq_date, acq_time, zone=None):
     """ Function to convert ACQ_DATE and ACQ_TIME to a datetime object in UTC """
     # Ensure ACQ_TIME is in HHMM format
     acq_time = str(acq_time).zfill(4)  # Pad to 4 digits if necessary
@@ -39,16 +39,20 @@ def convert_datetime(acq_date, acq_time):
     acq_date_str = acq_date.strftime('%Y-%m-%d')
     dt = datetime.strptime(acq_date_str + acq_time, '%Y-%m-%d%H%M')
 
-    # Localize the datetime object to UTC
-    dt_utc = pytz.utc.localize(dt)
-    return dt_utc
+    # Localize the datetime object to the specified timezone
+    dt_utc = dt.replace(tzinfo=ZoneInfo("UTC"))  # localize the UTC timezone
+    if zone is not None:
+        dt_zone = dt_utc.astimezone(ZoneInfo(zone))
+        return dt_zone
+    else:
+        return dt_utc
 
 
-def get_coords(geom, buffer):
+def get_coords(geom, buffer, crs='EPSG:4326'):
     """ Returns the bounding box coordinates for a given geometry(ies) and buffer """
     _geom = geom.copy()
     _geom['geometry'] = _geom.geometry.buffer(buffer)
-    bounds = _geom.to_crs('EPSG:4326').unary_union.envelope  # make sure it is in geographic coordinates
+    bounds = _geom.to_crs(crs).unary_union.envelope
     coords = list(bounds.exterior.coords)
 
     # Calculate extent
