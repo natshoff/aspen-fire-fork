@@ -3,6 +3,7 @@ library(tidyverse)
 library(sf) # spatial
 library(INLA) # for spatial Bayes model
 library(ggcorrplot)
+library(lubridate)
 
 # Environment variables
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
@@ -14,13 +15,16 @@ maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/A
 # load the spatial grid
 fp <- paste0(maindir,'data/spatial/mod/VIIRS/viirs_snpp_jpss1_afd_latlon_aspenfires_pixar_gridstats.gpkg')
 grid <- st_read(fp) %>%
- select(c(grid_index, geom))
+ mutate(first_obs_date = as.Date(first_obs_date),  # Convert to Date
+        year = year(first_obs_date),              # Extract year
+        month = month(first_obs_date)) %>%
+ select(grid_index, year, month)
 
 # load the aggregated FRP grid with TreeMap and climate/topography
 fp <- paste0(maindir,'data/tabular/mod/viirs_snpp_jpss1_gridstats_fortypcd_climtopo.csv')
 grid_fortyp <-  read_csv(fp) %>%
  # select the required columns
- select(c(grid_index, Fire_ID, frp_csum, frp_max, 
+ select(c(grid_index, Fire_ID, first_obs_date, frp_csum, frp_max, 
           grid_x, grid_y, SpeciesName, spp_pct, forest_pct,
           erc, erc_dv, vpd, vpd_dv, elev, slope, chili, tpi))
 
@@ -124,16 +128,25 @@ spp <- c("aspen", "douglas_fir", "lodgepole", "ponderosa", "spruce_fir", "piñon
 #  mutate(across(c(vpd, erc, elev, slope, tpi, chili,
 #                  aspen, douglas_fir, spruce_fir, lodgepole, ponderosa, piñon_juniper), scale))
 
+####################################################
 # scale just the climate/topography effects variables
 grid_sc <- grid_w %>%
- mutate(across(c(vpd_dv, erc_dv, elev, slope, tpi, chili), scale),
-        Fire_ID_nm = as.numeric(as.factor(Fire_ID))) %>%
- select(-c(Fire_ID, grid_index, frp_max, frp_csum, grid_x, grid_y, 
-           forest_pct, vpd, erc, geom))
+ mutate(across(c(vpd, erc, elev, slope, tpi, chili), scale),
+        Fire_ID_nm = as.numeric(as.factor(Fire_ID)))
+
+# create a "season" based on month
+grid_sc <- grid_sc %>%
+ mutate(season = case_when(
+  month %in% c(3, 4, 5) ~ "spring",
+  month %in% c(6, 7, 8) ~ "summer",
+  month %in% c(9, 10, 11) ~ "fall",
+ ),
+ year_season = interaction(year, season, drop = TRUE))
 
 # define the model effects data
 effects_da <- grid_sc %>%
- select(-c(log_frp_max))
+ select(-c(Fire_ID, grid_index, log_frp_max, frp_max, frp_csum, grid_x, grid_y, 
+           forest_pct, vpd_dv, erc_dv, geom, month))
 colnames(effects_da)
 
 dim(grid_sc)
@@ -145,7 +158,7 @@ dim(effects_da)
 # define the formula
 mf <- 
  log_frp_max ~ aspen + douglas_fir + lodgepole + ponderosa + piñon_juniper + spruce_fir + # species composition
-               vpd_dv + erc_dv + elev + slope + tpi + chili # climate & topography
+               vpd + erc + slope + tpi + chili # climate & topography
 
 # fit the model                     
 model_bl1 <- inla(
@@ -163,7 +176,7 @@ summary(model_bl1)
 # define the formula
 mf2 <- 
  log_frp_max ~ aspen + douglas_fir + lodgepole + ponderosa + piñon_juniper + spruce_fir + # species composition
-               vpd + erc + elev + slope + tpi + chili + # climate & topography
+               vpd + erc + slope + tpi + chili + # climate & topography
                f(Fire_ID_nm, model = "iid")  # Random effect for fire-level variability
 
 # fit the model                     
@@ -210,213 +223,120 @@ spde <- inla.spde2.pcmatern(
 
 # link the mesh to data (effects) (A-Matrix)
 A <- inla.spde.make.A(
- mesh = mesh, # mesh grid
- loc = coords, # coordinate matrix
- group = grid_sc$Fire_ID_nm  # Group spatial effects by Fire_ID
+ mesh = mesh,
+ loc = coords
 )
 dim(A) # this should match the number of rows in our data
 nrow(grid_sc) # data rows
 
-# create spatial field index
-spatial_field_idx <- rep(1:spde$n.spde, times = length(unique(grid_sc$Fire_ID_nm)))
-length(spatial_field_idx) == dim(A)[2]
-
 # create an INLA stack
 stack <- inla.stack(
- data = list(log_frp_max = grid_sc$log_frp_max),  # Response variable
- A = list(A, 1),  # Link spatial and fixed effects
+ data = list(log_frp_max = grid_sc$log_frp_max),
+ A = list(A, 1), # Link spatial field and fixed effects
  effects = list(
-  spatial_field = 1:dim(A)[2],  # Correct spatial field index
-  grid_sc %>% select(-c(log_frp_max))  # Use the entire dataset as fixed effects
+  spatial_field = 1:spde$n.spde,
+  data.frame(effects_da)
  )
 )
 
-length(grid_sc$Fire_ID_nm) == nrow(grid_sc)  # Should return TRUE
-dim(A)[1] == nrow(grid_sc)  # Should return TRUE
-
 # define the formula.
 mf3 <- log_frp_max ~ aspen + douglas_fir + lodgepole + ponderosa + piñon_juniper + spruce_fir +
-                     vpd_dv + erc_dv + elev + slope + tpi + chili +
+                     vpd + erc + slope + tpi + chili +
                      f(Fire_ID_nm, model = "iid") +
-                     f(spatial_field, model = spde, group = group_fixed)
+                     f(spatial_field, model = spde)
 
 model_bl3 <- inla(
  formula = mf3,
  family = "gaussian",
  data = inla.stack.data(stack),
- control.predictor = list(A = inla.stack.A(stack), compute = TRUE),
+ control.predictor = list(A = inla.stack.A(stack)),
  control.compute = list(dic = TRUE, waic = TRUE)
 )
 
 # Summarize the model results
 summary(model_bl3)
 
-group_fixed <- rep(grid_sc$Fire_ID_nm, each = 1)
-length(group_fixed) == dim(A)[2]  # Should return TRUE
 
-# Length of group matches columns in A
-length(group_fixed) == dim(A)[2]
+##############################################
+# 4. Adding temporal random effect (fire year)
 
-# Spatial field indices match columns in A
-length(spatial_field_idx) == dim(A)[2]
+# define the formula.
+mf4 <- log_frp_max ~ aspen + douglas_fir + lodgepole + ponderosa + piñon_juniper + spruce_fir +
+                     vpd + erc + slope + tpi + chili +
+                     f(Fire_ID_nm, model = "iid") + # fire random effect
+                     f(spatial_field, model = spde) + # spatial effect
+                     f(year_season, model = "rw1")  # temporal random effect
 
-# check
-dim(inla.stack.A(stack))
-dim(inla.stack.data(stack))
-
-spde$n.spde * length(unique(grid_sc$Fire_ID_nm)) == dim(A)[2]  # Should return TRUE
-
-
-
-
-length(grid_sc$Fire_ID_nm)
-spde$n.spde
-unique(grid_sc$Fire_ID_nm)
-
-
-
-dim(effects_da)  # Should match nrow(grid_sc)
-stopifnot(nrow(effects_da) == nrow(grid_sc))
-
-
-
-spatial_field <- data.frame(spatial_field = 1:ncol(A))
-head(spatial_field)
-any(is.na(grid_w$Fire_ID_nm))
-length(grid_w$Fire_ID_nm) == nrow(grid_w)  # Should return TRUE
-
-# create an INLA  data stack
-stack <- inla.stack(
- data = list(log_frp_max = grid_sc$log_frp_max),
- A = list(A, 1),
- effects = list(
-  spatial_field = spatial_field,
-  effects_df
- )
-)
-
-
-
-# Expand baseline model with spatial effects
-mf2 <- log_frp_max ~ aspen + douglas_fir + spruce_fir + lodgepole + ponderosa + piñon_juniper +
- f(Fire_ID, model = "iid") + # Between-fire random effect
- f(spatial_field, model = spde, group = Fire_ID_nm) # Within-fire spatial effect
-
-# fit the model.
-model_bl2 <- inla(
- formula = mf2,
+model_bl4 <- inla(
+ formula = mf4,
+ family = "gaussian",
  data = inla.stack.data(stack),
- control.predictor = list(A = inla.stack.A(stack), compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE),
- family = "gaussian"
+ control.predictor = list(A = inla.stack.A(stack)),
+ control.compute = list(dic = TRUE, waic = TRUE)
 )
-summary(model_bl2)
 
- 
-
-
-# library(sp)
-# grid.sp <- as(grid_aspen, "Spatial")
-# idx.mapping <- as.vector(t(matrix(1:50, nrow = 10, ncol = 5)))
-# grid.sp2 <- grid.sp[idx.mapping, ]
+# Summarize the model results
+summary(model_bl4)
 
 
+######################
+# Compare DIC and WAIC
 
-# fires <- unique(grid_aspen$Fire_ID)[1:3]  # Get unique fire IDs
-# # fire_data <- split(grid_aspen, grid_aspen$Fire_ID)  # Split data by Fire_ID
-# fire_data <- grid_aspen %>% filter(Fire_ID %in% fires)
-# 
-# fire_meshes <- list()
-# fire_spdes <- list()
-# 
-# for (fire_id in unique(fire_data$Fire_ID)) {
-#  print(fire_id)
-#  fire_grid <- grid_aspen %>% filter(Fire_ID == fire_id)
-# 
-#  # Create the mesh for this fire
-#  loc <- as.matrix(fire_grid[, c("grid_x", "grid_y")])
-#  mesh <- inla.mesh.2d(
-#   loc = loc,
-#   max.edge = c(30, 100),  # Adjust based on fire size
-#   cutoff = 10           # Minimum distance between nodes
-#  )
-# 
-#  # Create the SPDE model for the mesh
-#  spde <- inla.spde2.matern(mesh)
-# 
-#  # Store the mesh and SPDE model
-#  fire_meshes[[fire_id]] <- mesh
-#  fire_spdes[[fire_id]] <- spde
-# }
-# 
-# ##################
-# # attached to fire
-# fire_indices <- list()
-# 
-# for (fire_id in names(fire_spdes)) {
-#  spde <- fire_spdes[[fire_id]]
-#  n_spde <- spde$n.spde
-#  fire_indices[[fire_id]] <- data.frame(
-#   spatial_field = 1:n_spde,  # Spatial index
-#   Fire_ID = fire_id          # Fire ID
-#  )
-# }
-# 
-# # Combine all spatial indices
-# spatial_indices <- do.call(rbind, fire_indices)
-# 
-# ########################
-# # Create the data stacks
-# stack_list <- list()
-# 
-# for (fire_id in names(fire_meshes)) {
-#  fire_grid <- grid_aspen %>% filter(Fire_ID == fire_id)
-#  mesh <- fire_meshes[[fire_id]]
-#  spde <- fire_spdes[[fire_id]]
-# 
-#  # Create A matrix
-#  A <- inla.spde.make.A(
-#   mesh = mesh,
-#   loc = as.matrix(fire_grid[, c("grid_x", "grid_y")])
-#  )
-# 
-#  # isolate effects
-#  effects_df <- fire_grid %>%
-#   select(-c(grid_index, frp_max, grid_x, grid_y, forest_pct))
-# 
-#  # Create the stack
-#  stack <- inla.stack(
-#   data = list(frp_max = fire_grid$frp_max),
-#   A = list(A, 1),
-#   effects = list(
-#    spatial_field = spatial_indices[spatial_indices$Fire_ID == fire_id, "spatial_field"],
-#    data.frame(effects_df)  # Covariates
-#   )
-#  )
-# 
-#  stack_list[[fire_id]] <- stack
-# }
-# 
-# # Combine all stacks
-# full_stack <- do.call(inla.stack, stack_list)
-# 
-# data_stack <- inla.stack.data(full_stack)
-# data_stack$Fire_ID <- as.factor(data_stack$Fire_ID)
-# str(data_stack)
-# 
-# any(is.na(data_stack))
-# sapply(data_stack, function(x) any(is.nan(x)))
-# 
-# 
-# # Run the model.
-# model_formula <- frp_max ~ aspen + lodgepole +
-#  f(Fire_ID, model = "iid") +  # Random effect for fire-level variability
-#  f(spatial_field, model = spde, group = Fire_ID)  # Fire-specific spatial fields
-# 
-# result <- inla(
-#  formula = model_formula,
-#  data = inla.stack.data(full_stack),
-#  control.predictor = list(A = inla.stack.A(full_stack)),
-#  control.compute = list(dic = TRUE, waic = TRUE),  # Enable model evaluation metrics
-#  family = "gaussian"  # Use Gaussian for log-transformed FRP
-# )
+cat("Spatial model: \n")
+cat("DIC:", model_bl3$dic$dic, "\n")
+cat("WAIC:", model_bl3$waic$waic, "\n\n")
+
+cat("Spatial-temporal model (year): \n")
+cat("DIC:", model_bl4$dic$dic, "\n")
+cat("WAIC:", model_bl4$waic$waic, "\n")
+
+# rm(model_bl1)
+# gc()
+
+
+# Extract fixed effects
+fixed_effects <- as.data.frame(model_bl4$summary.fixed)
+fixed_effects$Variable <- rownames(fixed_effects)
+
+# Exponentiate coefficients for interpretation
+fixed_effects$mean_exp <- exp(fixed_effects$mean)
+fixed_effects$lower_exp <- exp(fixed_effects$`0.025quant`)
+fixed_effects$upper_exp <- exp(fixed_effects$`0.975quant`)
+
+# Plot exponentiated coefficients (excluding intercept for clarity)
+ggplot(fixed_effects %>% filter(Variable != "(Intercept)"), 
+       aes(x = Variable, y = mean_exp, ymin = lower_exp, ymax = upper_exp)) +
+ geom_pointrange() +
+ coord_flip() +
+ labs(y = "Effect on FRP", x = "Variable") +
+ theme_minimal()
+
+
+# Extract spatial field posterior mean
+spatial_effects <- inla.spde.make.index("spatial_field", n.spde = spde$n.spde)
+spatial_field_mean <- model_bl4$summary.random$spatial_field$mean
+
+# Add to mesh
+mesh_df <- data.frame(
+ x = mesh$loc[, 1],
+ y = mesh$loc[, 2],
+ spatial_effect = spatial_field_mean
+)
+ggplot(mesh_df, aes(x = x, y = y, color = spatial_effect)) +
+ geom_point(size = 1) +
+ scale_color_viridis_c() +
+ coord_equal() +
+ labs(title = "Spatial Field (Posterior Mean)", x = "Longitude", y = "Latitude") +
+ theme_minimal()
+
+
+# Extract year random effect
+year_effects <- model_bl4$summary.random$year_season
+
+ggplot(year_effects, aes(x = ID, y = mean, ymin = `0.025quant`, ymax = `0.975quant`)) +
+ geom_pointrange() +
+ geom_line() +
+ labs(title = "Year-Season Effect (Posterior Mean)", x = "Year-Season", y = "Effect Size") +
+ theme_minimal() +
+ theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
