@@ -205,7 +205,7 @@ def find_best_match(perim, neighbors, max_size_diff):
         max_size_diff: the maximum allowed size difference (in % difference)
     """
     # Get the fire size from the perimeter data
-    perim_size = perim['GIS_ACRES']
+    perim_size = perim['Final_Acres']
 
     # Initialize best score and match
     best_score = float('inf')
@@ -247,9 +247,9 @@ def find_nearest(perims, points, nn, max_dist=50000, max_size_diff=150):
     no_matches = []  # to store fires with no matches
 
     for _, perim in perims.iterrows():
-        fire_id = perim['OBJECTID']
+        fire_id = perim['Fire_ID']
         perim_geom = perim.geometry
-        fire_year = perim['FIRE_YEAR']
+        fire_year = perim['Fire_Year']
 
         # Filter incident points to the fire year (filtered once per perimeter)
         inci_points = points[points['START_YEAR'] == fire_year]
@@ -280,9 +280,12 @@ def find_nearest(perims, points, nn, max_dist=50000, max_size_diff=150):
         best_ = find_best_match(perim, nearest_points, max_size_diff=max_size_diff)
 
         if best_ is not None:
-            best_['NIFC_ID'] = perim['OBJECTID']
-            best_['NIFC_NAME'] = perim['INCIDENT']
-            best_['NIFC_ACRES'] = perim['GIS_ACRES']
+            best_['Fire_ID'] = perim['Fire_ID']
+            best_['Fire_Name'] = perim['Fire_Name']
+            best_['Final_Acres'] = perim['Final_Acres']
+            best_['Source'] = perim['Source']
+            best_['Start_Date'] = perim['Start_Date']
+            best_['Aspen_Pct'] = perim['pct_aspen']
             out_nns.append(best_.to_frame().T)  # Convert best match to DataFrame before appending
 
     # Concatenate the no_matches

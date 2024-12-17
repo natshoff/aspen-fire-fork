@@ -12,7 +12,9 @@ maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/A
 
 #=========Prep the grid data grid=========#
 
-# Format the species composition data frame
+# Format the species composition data frame 
+# (long-format) each grid has rows for species occurrence
+# climate and topography are summarized at the grid level
 
 # load the aggregated FRP grid with TreeMap and climate/topography
 fp <- paste0(maindir,'data/tabular/mod/viirs_snpp_jpss1_gridstats_fortypcd_climtopo.csv')
@@ -28,89 +30,60 @@ grid_fortyp <-  read_csv(fp)  %>% # read in the file
           grid_x, grid_y, SpeciesName, spp_pct, forest_pct,
           erc, erc_dv, vpd, vpd_dv, elev, slope, chili, tpi)) %>%
  # remove missing FRP, prep columns
- filter(frp_max > 0) %>% # make sure FRP is not 0
+ filter(frp_max_day > 0) %>% # make sure daytime FRP is not 0
  # create a numeric fire ID
  mutate(Fire_ID = as.factor(Fire_ID),
         Fire_ID_nm = as.numeric(as.character(Fire_ID)),
         spp_pct = spp_pct / 100, # set cover 0-1
+        # Format species names consistently
+        SpeciesName = str_replace_all(SpeciesName, "-", "_"),
+        SpeciesName = str_to_lower(SpeciesName),
         # proportion of contributing AFD during daytime observations
-        day_prop = day_count / afd_count) %>% 
+        day_prop = day_count / afd_count,
+        # log-scaled outcomes
+        log_frp_max = log(frp_max + 1e-5),
+        log_frp_csum = log(frp_csum + 1e-5),
+        log_frp_max_day = log(frp_max_day + 1e-5),
+        log_frp_max_night = log(frp_max_night + 1e-5),
+        # Create a "season" variable based on the month
+        season = case_when(
+         month %in% c(3, 4, 5) ~ "spring",
+         month %in% c(6, 7, 8) ~ "summer",
+         month %in% c(9, 10, 11) ~ "fall"
+        ),
+        # Year/season interaction
+        year_season = interaction(year, season, drop = TRUE)) %>%
+ # calculate the percent conifer
+ group_by(grid_index) %>%
+ mutate(
+  conifer = sum(
+   spp_pct[SpeciesName %in% c("douglas_fir", "lodgepole", "ponderosa", 
+                              "spruce_fir", "piñon_juniper")], na.rm = TRUE)
+  ) %>% ungroup() %>%
  # be sure there are no duplicate rows
  distinct(grid_index, Fire_ID_nm, SpeciesName, .keep_all = TRUE) # remove duplicates
 glimpse(grid_fortyp) # check the results
 
 
-#####################################
-# reshape the data frame for modeling
+#############################
+# create a wider format table 
+# (one row for each grid, species percent as columns)
 grid_fortyp_w <- grid_fortyp %>% 
- # tidy the species names
- mutate(SpeciesName = str_replace_all(SpeciesName, "-", "_"),
-        SpeciesName = str_to_lower(SpeciesName),
-        spp_pct = as.numeric(spp_pct)) %>%
  # pivot wider to get species as columns
  pivot_wider(
   names_from = SpeciesName, 
   values_from = spp_pct, 
-  values_fill = 0) %>% # pivot wider
- # create the log-scaled outcome variable
- mutate(log_frp_max = log(frp_max + 1e-5),
-        log_frp_csum = log(frp_csum + 1e-5),
-        log_frp_max_day = log(frp_max_day + 1e-5),
-        log_frp_max_night = log(frp_max_night + 1e-5),
-        # create a conifer column
-        conifer = rowSums(select(., douglas_fir, lodgepole, ponderosa, 
-                                 spruce_fir, piñon_juniper), na.rm = TRUE),
-        # create a "season" based on month
-        season = case_when(
-         month %in% c(3, 4, 5) ~ "spring",
-         month %in% c(6, 7, 8) ~ "summer",
-         month %in% c(9, 10, 11) ~ "fall",
-        ),
-        # year/season interaction
-        year_season = interaction(year, season, drop = TRUE))
-
+  values_fill = 0)
 # double check some dimension
 colnames(grid_fortyp_w)
 nrow(grid_fortyp_w)
 
 
-#############################################
-# retain grid cells with some aspen component
-grid_aspen_w <- grid_fortyp_w %>%
- filter(aspen > 0) # greater than 0 percent aspen cover
-print("Percent of grids with some aspen component:")
-nrow(grid_aspen_w)/nrow(grid_fortyp_w)*100
-
-# tidy up
-rm(grid_fortyp)
-gc()
-
-
 
 #===============Explore Distributions, etc.================#
 
-
-#################################################
-# distribution of raw frp_max and log-transformed
-# Reshape the data to long format
-grid_fortyp_w %>%
- # Ensure daytime FRP is greater than 0
- filter(frp_max_day > 0) %>%
- # pivot longer to facet plot
- pivot_longer(cols = c(frp_max, log_frp_max, log_frp_max_day),
-              names_to = "variable",
-              values_to = "value") %>%
- # Plot with facets
- ggplot(aes(x = value)) +
-  geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
-  facet_wrap(~ variable, scales = "free", 
-             labeller = as_labeller(c(frp_max = "frp_max", 
-                                      log_frp_max = "log(frp_max)",
-                                      log_frp_max_day = "log(frp_max_day)"))) +
-  labs(x = "value",
-       y = "Frequency") +
-  theme_minimal()
-
+# list of species names
+spp <- c("aspen", "douglas_fir", "lodgepole", "ponderosa", "spruce_fir", "piñon_juniper")
 
 ###########################################
 # distribution of forest type percent cover
@@ -122,9 +95,41 @@ grid_fortyp_w %>%
  facet_wrap(~ species, scales = "free") +
  theme_minimal()
 
-# check for NA values
-any(is.na(grid_fortyp_w)) # should be FALSE
+##############################
+# Distribution of forest types
+grid_fortyp_w %>%
+ select(all_of(spp)) %>%
+ summarize(across(everything(), ~ sum(. > 0))) %>%
+ pivot_longer(cols = everything(), names_to = "species", values_to = "count") %>%
+ ggplot(aes(x = reorder(species, -count), y = count, fill = species)) +
+  geom_bar(stat = "identity") +
+  labs(
+   x = "Species",
+   y = "Number of Grid Cells"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
 
+#################################################
+# distribution of raw frp_max and log-transformed
+# Reshape the data to long format
+grid_fortyp_w %>%
+ # Ensure daytime FRP is greater than 0
+ filter(frp_max_day > 0) %>%
+ # pivot longer to facet plot
+ pivot_longer(cols = c(frp_max, log_frp_max_day, log_frp_csum),
+              names_to = "variable",
+              values_to = "value") %>%
+ # Plot with facets
+ ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
+  facet_wrap(~ variable, scales = "free", 
+             labeller = as_labeller(c(frp_max = "frp_max", 
+                                      log_frp_max_day = "log(frp_csum)",
+                                      log_frp_csum = "log(frp_max_day)"))) +
+  labs(x = "value",
+       y = "Frequency") +
+  theme_minimal()
 
 ###############################
 # correlation matrix on effects
@@ -147,87 +152,102 @@ gc()
 
 set.seed(456)
 
-#############################
-# Set up the model data frame
-
-# list of species names
-spp <- c("aspen", "douglas_fir", "lodgepole", "ponderosa", "spruce_fir", "piñon_juniper")
-
-# scale just the climate/topography effects variables
-grid_sc <- grid_fortyp_w %>%
- # scale effects variables
- mutate(across(c(vpd_dv, erc_dv, elev, slope, tpi, chili), scale)) %>%
- # make sure the response variable > 0
- filter(frp_max_day > 0)
-
-# define the model effects data
-effects_da <- grid_sc %>%
- # remove all but the model effects
- select(-c(Fire_ID, grid_index, grid_x, grid_y, 
-           frp_max, frp_csum, frp_max_night, frp_max_day,
-           log_frp_csum, log_frp_max, log_frp_max_day, log_frp_max_night,
-           first_obs_date, afd_count, day_count, night_count, overlap,
-           forest_pct, vpd, erc, month)) %>%
- as_tibble()
-colnames(effects_da)
-
-# make sure the dimensions match
-dim(grid_sc)
-dim(effects_da)
-
+##########################################
+# Generate diversity indices for each grid
+# 'shannon_H' = dominance-adjusted Shannon index
+spp_effect <- grid_fortyp_w %>%
+ rowwise() %>%
+ mutate(
+  shannon = -sum(c_across(all_of(spp)) * log(c_across(all_of(spp))), na.rm = TRUE),
+  simpson = 1 - sum(c_across(all_of(spp))^2, na.rm = TRUE),
+  shannon_H = shannon * simpson
+ ) %>%
+ ungroup() %>%
+ mutate(across(c(vpd_dv, erc_dv, elev, slope, tpi, chili), scale))
+head(spp_effect%>%select(grid_index,shannon,simpson,shannon_H))
 
 ####################################
 # Generate species covariance matrix
-sp_mat <- grid_sc %>%
- select(aspen, douglas_fir, lodgepole, ponderosa, spruce_fir, piñon_juniper)
-# caompute the pearson correlation matrix
-sp_cov <- cor(sp_mat, method = "pearson")  # Pearson correlation
-# ensure positive semi-definitiveness
+sp_mat <- grid_fortyp_w %>%
+ select(all_of(spp))
+# compute the pearson correlation matrix
+sp_cov <- cor(sp_mat, method = "spearman")  # Spearman rank correlation
+# ensure positive semi-definite
 eigenvalues <- eigen(sp_cov)$values
 print(eigenvalues)
 # plot the matrix
 ggcorrplot(sp_cov, method = "circle", lab = TRUE)
 
-
-################################
-# Calculate the "species effect"
-
-sp_l <- grid_sc %>%
- select(grid_index, aspen, douglas_fir, lodgepole, ponderosa, spruce_fir, piñon_juniper) %>%
- pivot_longer(cols=-grid_index,
-              names_to = "species", 
-              values_to = "sp_cover") %>%
- mutate(sp_id = as.numeric(as.factor(species)),
-        cidx = interaction(grid_index, sp_id, drop = TRUE))
-
-
-# merge back the climate + topography
-clim_topo <- grid_sc %>%
- mutate(across(c(vpd_dv, erc_dv, elev, slope, tpi, chili), as.numeric))
-
-sp_l <- sp_l %>%
- left_join(
-  clim_topo %>% 
-   select(grid_index, Fire_ID_nm, year_season, year, grid_x, grid_y,
-          vpd_dv, erc_dv, elev, slope, tpi, chili), 
-  by = "grid_index")
-glimpse(sp_l)
-
-rm(clim_topo)
+# tidy up
+rm(sp_mat, eigenvalues, grid_fortyp_w)
 gc()
+
+###############################################
+# Update the covariance matrix for grid-species
+# Determine the number of grid cells
+n_grids <- length(unique(grid_fortyp$grid_index))
+# Construct a block-diagonal covariance matrix
+sp_cov_grid <- Matrix::bdiag(replicate(n_grids, sp_cov, simplify = FALSE))  # Block-diagonal matrix
+dim(sp_cov_grid)  # Should be (n_grids * 6) x (n_grids * 6)
+Matrix::isSymmetric(sp_cov_grid)  # Should return TRUE
+
+# tidy up.
+rm(sp_cov)
+gc()
+
+#############################################
+# Calculate the Latent Field "species effect"
+lat_spp_effect <- grid_fortyp %>%
+ # filter to remove 0 spp cover
+ filter(spp_pct > 0) %>%
+ mutate(
+  spp_id = as.numeric(as.factor(SpeciesName)),  # Assign numeric IDs to species
+  cidx = as.numeric(as.factor(interaction(grid_index, spp_id, drop = TRUE))),  # Grid × species interaction index
+  # Scale climate/topography variables
+  across(c(vpd_dv, erc_dv, elev, slope, tpi, chili), scale)
+ )
+glimpse(lat_spp_effect)
+length(unique(lat_spp_effect$cidx))  # Should match the number of unique grid × species combinations
+
+# tidy up.
+rm(grid_fortyp)
+gc()
+
+
+
+#===========MODEL FITTING==============#
+
+##############################################################
+# 1. Baseline model without spatial component or random effect
+# Species cover, climate, topography as fixed effects
+# Dominance-adjusted Shannon diversity index by species contributions
+
+mf <- log_frp_max_day ~ shannon_H * (aspen + lodgepole + ponderosa + spruce_fir + piñon_juniper + douglas_fir) + # species effects
+                        vpd_dv + erc_dv + elev + slope + tpi + chili + # climate+topography
+ f(as.factor(Fire_ID), model="iid") # random effect for fire ID
+                    
+# fit the model                     
+model_bl1 <- inla(
+ mf, data = spp_effect, 
+ family = "gaussian",
+ control.predictor = list(compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE)
+)
+
+summary(model_bl1)
 
 
 ##############################################################
 # 1. Baseline model without spatial component or random effect
 
 # set the formula.
-mf <- 
- log_frp_max_day ~ (aspen + douglas_fir + lodgepole + ponderosa + piñon_juniper + spruce_fir) + # species composition
-                    vpd_dv + erc_dv + elev + slope + tpi + chili # climate & topography
-
+mf <- log_frp_max_day ~ vpd_dv + erc_dv + elev + slope + tpi + chili +  # Climate/topography
+                        # Latent fields for species composition
+                        f(cidx, spp_pct, model = "generic0", Cmatrix = sp_cov_grid, 
+                          hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01))))
 # fit the model                     
 model_bl1 <- inla(
- mf, data = grid_sc, # data with scaled climate/topo
+ mf, data = spp_effect, 
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE)
@@ -238,15 +258,15 @@ summary(model_bl1)
 ###########################################################
 # 2. Adding between fires effect (random effect on fire ID)
 
-# define the formula
-mf2 <- 
- log_frp_max_day ~ (aspen + douglas_fir + lodgepole + ponderosa + piñon_juniper + spruce_fir) + # species composition
-                   vpd_dv + erc_dv + slope + tpi + chili + # climate & topography
-                   f(Fire_ID_nm, model = "iid")  # Random effect for fire-level variability
+# set the formula.
+mf2 <- log_frp_max_day ~ vpd_dv + erc_dv + elev + slope + tpi + chili +  # Climate/topography
+                         f(cidx, spp_pct, model = "generic0", Cmatrix = sp_cov_grid, 
+                           hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))) +
+                         f(Fire_ID_nm, model = "iid") # Fire ID random effect
 
 # fit the model                     
 model_bl2 <- inla(
- mf2, data = grid_sc,
+ mf2, data = spp_effect, 
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE)
@@ -265,18 +285,25 @@ cat("With Fire_ID Random Effect: \n")
 cat("DIC:", model_bl2$dic$dic, "\n")
 cat("WAIC:", model_bl2$waic$waic, "\n")
 
-rm(model_bl1)
-gc()
+print("Keeping better model")
+if (model_bl1$waic$waic > model_bl2$waic$waic) {
+ rm(model_bl1) # clean up
+ gc()
+} else {
+ rm(model_bl2) # clean up
+ gc()
+}
 
 
 ############################################
 # 3. Adding "within-fire" spatial dependence
 
-# Extract coordinates
-coords <- as.matrix(grid_sc[, c("grid_x", "grid_y")])
+# Extract coordinates from wide data frame
+coords <- spp_effect %>% distinct(grid_index, grid_x, grid_y)
+coords_mat <- as.matrix(coords[, c("grid_x", "grid_y")])
 # Create a shared spatial mesh
 mesh <- inla.mesh.2d(
- loc = coords,
+ loc = coords_mat,
  max.edge = c(10, 100),  
  cutoff = 0.01 # Minimum distance between points
 )
@@ -290,29 +317,29 @@ spde <- inla.spde2.pcmatern(
  prior.sigma = c(5, 0.01)    # Prior for variance
 )
 
-# link the mesh to data (effects) (A-Matrix)
+# create the A-matrix (linking mesh to coords)
 A <- inla.spde.make.A(
  mesh = mesh,
- loc = coords
+ loc = coords_mat
 )
-dim(A) # this should match the number of rows in our data
-nrow(grid_sc) # data rows
 
-# create an INLA stack
+# Create the INLA stack
 stack <- inla.stack(
- data = list(log_frp_max_day = grid_sc$log_frp_max_day),
- A = list(A, 1), # Link spatial field and fixed effects
+ data = list(log_frp_max_day = spp_effect$log_frp_max_day),  # Response variable
+ A = list(A, diag(nrow(spp_effect))),  # Sparse spatial field and identity matrix
  effects = list(
-  spatial_field = 1:spde$n.spde,
-  data.frame(effects_da)
+  spatial_field = 1:spde$n.spde,  # Spatial random field
+  spp_effect %>% select(-log_frp_max_day)  # All covariates except response
  )
 )
 
+#####################
 # define the formula.
-mf3 <- log_frp_max_day ~ (aspen + douglas_fir + lodgepole + ponderosa + piñon_juniper + spruce_fir) +
-                         vpd_dv + erc_dv + slope + tpi + chili +
-                         f(Fire_ID_nm, model = "iid") +
-                         f(spatial_field, model = spde)
+mf3 <- log_frp_max_day ~ vpd_dv + erc_dv + elev + slope + tpi + chili +  # Climate/topography
+                         f(cidx, spp_pct, model = "generic0", Cmatrix = sp_cov_grid, 
+                           hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))) +
+                         f(Fire_ID_nm, model = "iid") + # Fire ID random effect
+                         f(spatial_field, model = spde) # spatial effect
 
 model_bl3 <- inla(
  formula = mf3,
