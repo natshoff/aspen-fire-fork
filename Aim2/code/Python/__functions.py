@@ -4,6 +4,7 @@ maxwell.cook@colorado.edu
 """
 
 import gc, time, os, glob
+import tempfile, shutil
 import pandas as pd
 import numpy as np
 
@@ -25,6 +26,45 @@ def list_files(path, ext, recursive):
         return glob.glob(os.path.join(path, '**', '*{}'.format(ext)), recursive=True)
     else:
         return glob.glob(os.path.join(path, '*{}'.format(ext)), recursive=False)
+
+
+def save_zip(gdf, zip_path, temp_dir):
+    """
+    Save a GeoDataFrame as a zipped shapefile, optionally using a specific temporary directory.
+
+    Parameters:
+    - gdf (GeoDataFrame): The GeoDataFrame to save.
+    - zip_path (str): Path to the ZIP archive to create.
+    - temp_dir (str, optional): Path to the directory to use for temporary shapefile storage.
+                                If None, a temporary directory will be created.
+
+    Returns:
+    - str: Path to the ZIP archive.
+    """
+    try:
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # Define the shapefile name and path within the temp_dir
+        shp_name = os.path.splitext(os.path.basename(zip_path))[0]
+        shp_path = os.path.join(temp_dir, shp_name + '.shp')
+
+        # Save the shapefile
+        gdf.to_file(shp_path)
+
+        # Ensure all associated files are present
+        base_name = os.path.join(temp_dir, shp_name)
+        if not all(os.path.exists(base_name + ext) for ext in ['.shp', '.shx', '.dbf']):
+            raise FileNotFoundError("One or more shapefile components are missing.")
+
+        # Compress the shapefile into a ZIP archive
+        shutil.make_archive(os.path.splitext(zip_path)[0], 'zip', root_dir=temp_dir, base_dir='.')
+
+        return zip_path
+
+    finally:
+        # Clean up the temp directory
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
 
 
 def convert_datetime(acq_date, acq_time, zone=None):
