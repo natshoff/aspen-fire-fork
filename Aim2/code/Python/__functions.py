@@ -4,9 +4,10 @@ maxwell.cook@colorado.edu
 """
 
 import gc, time, os, glob
-import tempfile, shutil
+import shutil
 import pandas as pd
 import numpy as np
+import xarray as xr
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
