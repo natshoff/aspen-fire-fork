@@ -150,7 +150,7 @@ def compute_band_stats(geoms, image_da, id_col, attr=None, stats=None, ztype='ca
         props[[attr,'count']] = pd.DataFrame(props['props_list'].tolist(), index=props.index)
 
         # Handle NaN values
-        props.dropna(subset=[attr], inplace=True)  # handle cases where EVT is NaN
+        props.dropna(subset=[attr], inplace=True)
 
         # Tidy the columns.
         props[attr] = props[attr].astype(int)
