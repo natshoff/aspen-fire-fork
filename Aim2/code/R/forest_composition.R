@@ -10,34 +10,29 @@ library(lubridate)
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
 
 
-#=========Prep the grid data grid=========#
+#=========Prep the grid data=========#
 
 # Format the species composition data frame 
 # (long-format) each grid has rows for species occurrence
 # climate and topography are summarized at the grid level
 
 # load the aggregated FRP grid with TreeMap and climate/topography
-fp <- paste0(maindir,'data/tabular/mod/viirs_snpp_jpss1_gridstats_fortypcd_climtopo.csv')
-grid_fortyp <-  read_csv(fp)  %>% # read in the file
+fp <- paste0(maindir,'gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
+grid_tm <-  read_csv(fp)  %>% # read in the file
  # get the acquisition year and month
  mutate(first_obs_date = as.Date(first_obs_date),  # Convert to Date
         year = year(first_obs_date),              # Extract year
         month = month(first_obs_date)) %>%
- # select the required columns
- select(c(grid_index, year, month, Fire_ID, first_obs_date, 
-          frp_csum, frp_max, frp_max_day, frp_max_night,
-          afd_count, day_count, night_count, overlap,
-          grid_x, grid_y, SpeciesName, spp_pct, forest_pct,
-          erc, erc_dv, vpd, vpd_dv, elev, slope, chili, tpi)) %>%
  # remove missing FRP, prep columns
  filter(frp_max_day > 0) %>% # make sure daytime FRP is not 0
  # create a numeric fire ID
  mutate(Fire_ID = as.factor(Fire_ID),
         Fire_ID_nm = as.numeric(as.character(Fire_ID)),
-        spp_pct = spp_pct / 100, # set cover 0-1
         # Format species names consistently
-        SpeciesName = str_replace_all(SpeciesName, "-", "_"),
-        SpeciesName = str_to_lower(SpeciesName),
+        fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
+        fortypnm_gp = str_to_lower(fortypnm_gp),
+        species_gp_n = str_replace_all(species_gp_n, "-", "_"),
+        species_gp_n = str_to_lower(species_gp_n),
         # proportion of contributing AFD during daytime observations
         day_prop = day_count / afd_count,
         # log-scaled outcomes
@@ -56,13 +51,17 @@ grid_fortyp <-  read_csv(fp)  %>% # read in the file
  # calculate the percent conifer
  group_by(grid_index) %>%
  mutate(
-  conifer = sum(
-   spp_pct[SpeciesName %in% c("douglas_fir", "lodgepole", "ponderosa", 
-                              "spruce_fir", "piñon_juniper")], na.rm = TRUE)
+  conifer = max(
+   fortyp_pct[fortypnm_gp %in% c("mixed_conifer", "lodgepole", "ponderosa", 
+                                 "spruce_fir", "piñon_juniper")], na.rm = TRUE)
   ) %>% ungroup() %>%
  # be sure there are no duplicate rows
- distinct(grid_index, Fire_ID_nm, SpeciesName, .keep_all = TRUE) # remove duplicates
-glimpse(grid_fortyp) # check the results
+ distinct(grid_index, Fire_ID_nm, species_gp_n, .keep_all = TRUE) # remove duplicates
+glimpse(grid_tm) # check the results
+
+
+df <- grid_tm %>% slice(1:100)
+write.csv(df, paste0(maindir,'data/tabular/mod/TEMP_100rows_gridstats_example.csv'))
 
 
 #############################
@@ -71,7 +70,7 @@ glimpse(grid_fortyp) # check the results
 grid_fortyp_w <- grid_fortyp %>% 
  # pivot wider to get species as columns
  pivot_wider(
-  names_from = SpeciesName, 
+  names_from = species_gp_n, 
   values_from = spp_pct, 
   values_fill = 0)
 # double check some dimension

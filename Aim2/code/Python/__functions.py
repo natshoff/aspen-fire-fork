@@ -1,13 +1,22 @@
 """
 Helper functions for aspen intensity/severity work
+Python library imports
 maxwell.cook@colorado.edu
 """
 
-import gc, time, os, glob
+import gc, time, os, sys, glob
 import shutil
 import pandas as pd
 import numpy as np
 import xarray as xr
+import pandas as pd
+import rioxarray as rxr
+import xarray as xr
+import geopandas as gpd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.colors import to_rgba
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
