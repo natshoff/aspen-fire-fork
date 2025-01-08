@@ -7,6 +7,8 @@ library(ggcorrplot)
 library(lubridate)
 library(ggridges)
 library(reshape2)
+library(spdep)
+library(patchwork)
 
 # Environment variables
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
@@ -27,7 +29,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
         month = month(first_obs_date)) %>%
  # remove missing FRP, prep columns
  filter(
-  frp_max_day > 1, # make sure daytime FRP is not 0
+  frp_max_day > 0, # make sure daytime FRP is not 0
  ) %>% 
  # create a numeric fire ID
  mutate(
@@ -77,6 +79,25 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
 
+# Check on the grid cell counts for daytime observations
+grid_counts <- grid_tm %>%
+ distinct(Fire_ID, grid_index) %>% # keep only distinct rows
+ group_by(Fire_ID) %>%
+ summarise(n_grids = n())
+summary(grid_counts)
+quantile(grid_counts$n_grids, probs = seq(.1, .9, by = .1))
+
+# Identify fires with n_grids below the 10th percentile
+idx <- grid_counts %>%
+ filter(n_grids < quantile(grid_counts$n_grids, probs = 0.2)) %>%
+ pull(Fire_ID)
+length(idx)
+# filter the data frame to remove these fires
+grid_tm <- grid_tm %>%
+ filter(!Fire_ID %in% idx)
+
+rm(grid_counts, idx)
+gc()
 
 
 #===============Explore Distributions, etc.================#
@@ -110,7 +131,8 @@ grid_tm %>%
 cor_da <- grid_tm %>%
  select(
   sp_abundance_ld, sp_dominance_ld, balive, tpa_live, tree_ht_live,  # Forest composition metrics
-  erc_dv, vpd_dv, elev, slope, tpi, chili  # Climate and topography metrics
+  badead, tpa_dead, tree_ht_dead,
+  erc, erc_dv, vpd, vpd_dv, elev, slope, tpi, chili  # Climate and topography metrics
  ) %>%
  mutate_if(is.factor, as.numeric)  # Convert factors to numeric (if needed)
 
@@ -140,9 +162,6 @@ set.seed(456)
 # make sure aspen is first
 levels(grid_tm$fortypnm_gp)
 
-
-#===========MODEL FITTING==============#
-
 ############################################
 # 1. Baseline model: Predominant forest type
 # ~ Effect of forest type on FRP and CBI relative to aspen 
@@ -151,6 +170,8 @@ levels(grid_tm$fortypnm_gp)
 # ~ Spatial fields random effect
 
 # create a data frame for just the predominant forest type
+# one row per grid_index with the dominant forest type
+# filter to where that type is at least 50% of the grid forested area
 da <- grid_tm %>%
  select(grid_index, Fire_ID, year, year_season, # random effects 
         log_frp_max_day, CBIbc_p90, # response variables
@@ -159,46 +180,118 @@ da <- grid_tm %>%
         aspen_pres, # whether aspen is present in the grid
         x, y # grid centroid coordinate for spatial fields model
         ) %>%
- filter(fortyp_pct > 50) %>% # only grids where predominant species cover > 50%
+ filter(fortyp_pct > 0.50) %>% # only grids where predominant species cover > 50%
  # keep just one row per grid cell by predominant type
  distinct(grid_index, Fire_ID, fortypnm_gp, .keep_all = TRUE)
 
+# Create a data frame for the predictors
+# baseline model includes predominant forest type, climate, and topography
+X <- da[,c(1:2,7,10:17)]
+head(X)
+
+########################################
+# Create the spatial fields model (SPDE)
+# Extract coordinates as a matrix
+coords_mat <- as.matrix(select(da, x, y))
+# Create a shared spatial mesh
+mesh <- inla.mesh.2d(
+ loc = coords_mat,                    # Locations (grid centroids)
+ max.edge = c(10, 30),             # Maximum edge lengths (inner and outer)
+ cutoff = 0.1,                      # Minimum distance between points
+ offset = c(1, 3)               # Boundary buffer
+)
+plot(mesh)
+points(coords_mat, col = "red", pch = 19, cex = 0.5)
+
+# Build the SPDE model
+spde.bl <- inla.spde2.pcmatern(
+ # Mesh and smoothness parameter
+ mesh = mesh, 
+ alpha = 2,
+ # P(practic.range < 0.3) = 0.5
+ prior.range = c(0.3, 0.5),
+ # P(sigma > 1) = 0.01
+ prior.sigma = c(10, 0.01)
+)
+
+# Compute the projector matrix (A)
+A <- inla.spde.make.A(
+ mesh, # the spatial mesh created above
+ loc = coords_mat
+)
+dim(A) # should be equal to # of data locations X number of vertices
+table(rowSums(A > 0)) 
+table(rowSums(A))
+table(colSums(A) > 0) # triangles with no point locations
+
+# Assign the spatial index
+field.idx <- inla.spde.make.index(
+ "spatial_field", n.spde=mesh$n
+)
+
+
+#===========MODEL FITTING==============#
+
 #####
 # FRP
+
+# Create the FRP INLA stack
+stk.frp <- inla.stack(
+ data = list(log_frp_max_day = da$log_frp_max_day),
+ A = list(A, 1), 
+ effects = list(c(field.idx),
+                list(X)),
+ tag = 'est')
+dim(inla.stack.A(stk.frp))
+
 # Set up the model formula
 mf.frp <- log_frp_max_day ~ 
- fortypnm_gp + # dominant forest type
+ fortypnm_gp + # predominant forest type
  erc + vpd + elev + slope + tpi + chili + # climate+topography
- f(grid_index, model="iid") # grid-level random effect
+ f(Fire_ID, model="iid") + # fire-level random effect
+ f(grid_index, model="iid") + # grid-level random effect
+ f(spatial_field, model=spde.bl) # spatial model
 
 # fit the model                     
 model_bl.frp <- inla(
- mf.frp, data = da, 
+ mf.frp, data = inla.stack.data(stk.frp), 
  family = "gaussian",
- control.predictor = list(compute = TRUE),
+ control.predictor = list(A = inla.stack.A(stk.frp)),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
 )
 summary(model_bl.frp)
 
+
 #####
 # CBI
+
+# Create the CBI INLA stack
+stk.cbi <- inla.stack(
+ data = list(CBIbc_p90 = da$CBIbc_p90),
+ A = list(A, 1), 
+ effects = list(c(field.idx),
+                list(X)),
+ tag = 'est')
+
 # Set up the model formula
 mf.cbi <- CBIbc_p90 ~ 
  fortypnm_gp + # dominant forest type
  erc + vpd + elev + slope + tpi + chili + # climate+topography
- f(grid_index, model = "iid") # grid-level random effect
+ f(Fire_ID, model="iid") + # fire-level random effect
+ f(grid_index, model="iid") + # grid-level random effect
+ f(spatial_field, model=spde.bl) # spatial model
 
 # fit the model                     
 model_bl.cbi <- inla(
- mf.cbi, data = da, 
+ mf.cbi, data = inla.stack.data(stk.cbi), 
  family = "gaussian",
- control.predictor = list(compute = TRUE),
+ control.predictor = list(A = inla.stack.A(stk.cbi)),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
 )
 summary(model_bl.cbi)
 
 
-#===========Plotting Effects============#
+#===========Plotting Posterior Effects============#
 
 # Extract fixed effects related to fortypnm_gp
 
@@ -335,63 +428,123 @@ p2
 out_png <- paste0(maindir,'figures/INLA_PredominantFORTYP_PosteriorEffects_Ridge.png')
 ggsave(out_png, dpi=500, bg = 'white')
 
+
+######################################
+# Visualize the spatial random effects
+spat.eff.frp <- inla.spde.make.A(mesh, coords_mat) %*% model_bl.frp$summary.random$spatial_field$mean
+spat.eff.cbi <- inla.spde.make.A(mesh, coords_mat) %*% model_bl.cbi$summary.random$spatial_field$mean
+# Add spatial effects to the data frame
+spat.eff.df <- cbind(as.data.frame(coords_mat), spat_eff_frp = as.vector(spat.eff.frp))
+spat.eff.df <- cbind(spat.eff.df, spat_eff_cbi = as.vector(spat.eff.cbi))
+colnames(spat.eff.df) <- c("x", "y", "spat_eff_frp", "spat_eff_cbi")
+
+# Convert to an sf object for mapping
+spat.sf <- st_as_sf(spat.eff.df, coords = c("x", "y"), crs = 4326)  # Adjust CRS if needed
+
+# Plot spatial effects
+# FRP Map
+frp_map <- ggplot(spat.sf) +
+ geom_sf(aes(color = spat_eff_frp), size = 2) +
+ scale_color_viridis_c(option = "plasma", name = "Spatial Effect (FRP)") +
+ theme_minimal() +
+ labs(title = "Spatial Random Effects (FRP)", x = "Longitude", y = "Latitude")
+
+# CBI Map
+cbi_map <- ggplot(spat.sf) +
+ geom_sf(aes(color = spat_eff_cbi), size = 2) +
+ scale_color_viridis_c(option = "plasma", name = "Spatial Effect (CBI)") +
+ theme_minimal() +
+ labs(title = "Spatial Random Effects (CBI)", x = "Longitude", y = "Latitude")
+
+# Combine maps
+frp_map + cbi_map
+
+# Density plot of spatial random effects
+ggplot(spat.eff.df, aes(x = spat_eff_frp)) +
+ geom_density(fill = "blue", alpha = 0.5) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ theme_minimal() +
+ labs(
+  title = "Distribution of Spatial Random Effects",
+  x = "Spatial Effect",
+  y = "Density"
+ )
+
+ggplot(spat.eff.df, aes(x = spat_eff_cbi)) +
+ geom_density(fill = "blue", alpha = 0.5) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ theme_minimal() +
+ labs(
+  title = "Distribution of Spatial Random Effects",
+  x = "Spatial Effect",
+  y = "Density"
+ )
+
+# Tidy up
+rm(spat.eff.frp, spat.eff.cbi, spat.eff.df, spat.sf)
+
+############################################
+# Contributions to explaining model variance
+
+# Extract variance components for random effects
+res.prec <- model_bl.frp$summary.hyperpar["Precision for the Gaussian observations", "mean"]
+res.var <- 1 / res.prec # variance
+grid.prec <- model_bl.frp$summary.hyperpar["Precision for grid_index", "mean"]
+grid.var <- 1 / grid.prec # variance
+fire.prec <- model_bl.frp$summary.hyperpar["Precision for Fire_ID", "mean"]
+fire.var <- 1 / grid.prec # variance
+spat.sd <- model_bl.frp$summary.hyperpar["Stdev for spatial_field", "mean"]
+spat.var <- spat.sd^2 # variance
+
+# Extract variance components for the fixed effects
+# Compute predicted values based on fixed effects
+fixed.eff <- model_bl.frp$summary.fitted.values$mean
+# Compute variance of fixed effects predictions
+fixed.var <- var(fixed.eff, na.rm = TRUE)
+
+# Total variance (random + fixed effects)
+total.var <- res.var + fixed.var + grid.var + fire.var + spat.var
+
+# Proportions
+var.contr <- data.frame(
+ Component = c(
+  "Residual",
+  "Fixed Effects",
+  "Grid-Level IID",
+  "Fire-level IID",
+  "Spatial Field"),
+ Variance = c(res.var, fixed.var, grid.var, fire.var, spat.var),
+ Proportion = c(
+  res.var / total.var,
+  fixed.var / total.var,
+  grid.var / total.var,
+  fire.var / total.var,
+  spat.var / total.var
+ )
+)
+
+# Visualize as a bar plot
+ggplot(var.contr, aes(x = Component, y = Proportion, fill = Component)) +
+ geom_bar(stat = "identity", alpha = 0.8) +
+ scale_fill_viridis_d() +
+ theme_light() +
+ labs(
+  x = "Model Component",
+  y = "Proportion of Variance Explained"
+ )
+
+###########
+# tidy up !
 rm(frp_marginals, cbi_marginals, tidy_marginals, tidy_frp, tidy_cbi, tidy_combined,
-   model_bl.cbi, model_bl.frp, da, effects)
-gc() # clean up
+   model_bl.cbi, model_bl.frp, da, effects, res.var, res.prec, grid.var, grid.prec,
+   spat.var, spat.sd, fixed.var, fixed.eff, total.var, var.contr)
+gc() # garbage clean up
 
 
 ####################################################
 # Extend to include a fully spatial model using SPDE
 
-# Create the spatial fields model (SPDE)
-# Extract coordinates from wide data frame
-coords <- da %>% distinct(grid_index, x, y)
-coords_mat <- as.matrix(coords[, c("x", "y")])
-# Create a shared spatial mesh
-mesh <- inla.mesh.2d(
- loc = coords_mat,
- max.edge = c(1, 5),  
- cutoff = 0.01 # Minimum distance between points
-)
-plot(mesh)
 
-# define the stochastic partial difference equation (SPDE)
-spde <- inla.spde2.pcmatern(
- mesh = mesh,
- alpha = 2,  # Smoothness parameter
- prior.range = c(10, 0.01),  # Prior for spatial range
- prior.sigma = c(1, 0.01)    # Prior for variance
-)
-
-# create the A-matrix (linking mesh to coords)
-A <- inla.spde.make.A(
- mesh = mesh,
- loc = coords_mat,
- group = as.numeric(as.factor(da$Fire_ID))
-)
-
-# Define the spatial index
-spatial_index <- inla.spde.make.index(
- name = "spatial",
- n.spde = spde$n.spde,
- group = as.numeric(as.factor(da$Fire_ID)),
- n.group = length(unique(da$Fire_ID))
-)
-
-# Rename the group variable explicitly
-names(spatial_index) <- c("spatial", "spatial.group", "spatial.repl")
-
-# Create the INLA stack
-stack.frp <- inla.stack(
- data = list(log_frp_max_day = da$log_frp_max_day),  # Response variable
- A = list(A, 1),  # Sparse spatial field and identity matrix
- effects = list(
-  spatial_index,  # Spatial field
-  da %>% 
-   select(fortypnm_gp, erc_dv, vpd_dv, elev, slope, tpi, chili, Fire_ID) %>%  # Covariates
-   as.data.frame()
- )
-)
 
 
 
