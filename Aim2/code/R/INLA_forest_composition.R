@@ -6,6 +6,7 @@ library(INLA) # for spatial Bayes model
 library(ggcorrplot)
 library(lubridate)
 library(ggridges)
+library(reshape2)
 
 # Environment variables
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
@@ -75,7 +76,7 @@ glimpse(grid_tm) # check the results
 #===============Explore Distributions, etc.================#
 
 # list of species names
-spp <- c("aspen", "mixed_conifer", "lodgepole", "ponderosa", "spruce_fir", "piñon_juniper")
+spps <- c("aspen", "mixed_conifer", "lodgepole", "ponderosa", "spruce_fir", "piñon_juniper")
 
 ####################################
 # distribution of response variables
@@ -136,40 +137,107 @@ levels(grid_tm$fortypnm_gp)
 
 #===========MODEL FITTING==============#
 
-##############################################################
+############################################
 # 1. Baseline model: Predominant forest type
 # ~ Effect of forest type on FRP and CBI relative to aspen 
 # ~ FRP/CBIbc ~ dominant forest type + climate + topo
+# ~ Fire_ID random effect
+# ~ Spatial fields random effect
 
-# create a data frame for just the dominant forest type
+# create a data frame for just the predominant forest type
 da <- grid_tm %>%
  select(grid_index, Fire_ID, year, # random effects 
         log_frp_max_day, CBIbc_p90, # response variables
         fortypnm_gp, fortyp_pct, forest_pct, # forest type and percent cover
-        erc_dv, vpd_dv, elev, slope, tpi, chili # climate + topo
+        erc_dv, vpd_dv, elev, slope, tpi, chili, # climate + topo
+        x, y # grid centroid coordinate for spatial fields model
         ) %>%
  filter(fortyp_pct > 50) %>% # only grids where predominant species cover > 50%
  # keep just one row per grid cell
  distinct(grid_index, Fire_ID, fortypnm_gp, .keep_all = TRUE)
  
+# Create the spatial fields model (SPDE)
+# Extract coordinates from wide data frame
+coords <- da %>% distinct(grid_index, x, y)
+coords_mat <- as.matrix(coords[, c("x", "y")])
+# Create a shared spatial mesh
+mesh <- inla.mesh.2d(
+ loc = coords_mat,
+ max.edge = c(1, 5),  
+ cutoff = 0.01 # Minimum distance between points
+)
+plot(mesh)
+
+# define the stochastic partial difference equation (SPDE)
+spde <- inla.spde2.pcmatern(
+ mesh = mesh,
+ alpha = 2,  # Smoothness parameter
+ prior.range = c(10, 0.01),  # Prior for spatial range
+ prior.sigma = c(1, 0.01)    # Prior for variance
+)
+
+# create the A-matrix (linking mesh to coords)
+A <- inla.spde.make.A(
+ mesh = mesh,
+ loc = coords_mat,
+ group = as.numeric(as.factor(da$Fire_ID))
+)
+
+# Define the spatial index
+spatial_index <- inla.spde.make.index(
+ name = "spatial",
+ n.spde = spde$n.spde,
+ group = as.numeric(as.factor(da$Fire_ID)),
+ n.group = length(unique(da$Fire_ID))
+)
+
+# Rename the group variable explicitly
+names(spatial_index) <- c("spatial", "spatial.group", "spatial.repl")
+
+# Create the INLA stack
+stack.frp <- inla.stack(
+ data = list(log_frp_max_day = da$log_frp_max_day),  # Response variable
+ A = list(A, 1),  # Sparse spatial field and identity matrix
+ effects = list(
+  spatial_index,  # Spatial field
+  da %>% 
+   select(fortypnm_gp, erc_dv, vpd_dv, elev, slope, tpi, chili, Fire_ID) %>%  # Covariates
+   as.data.frame()
+ )
+)
+
 # FRP
 
 # Set up the model formula
 mf.frp <- log_frp_max_day ~ 
  fortypnm_gp + # dominant forest type
  erc_dv + vpd_dv + elev + slope + tpi + chili + # climate+topography
- f(Fire_ID, model = "iid") # Fire ID random effect
+ f(Fire_ID, model = "iid") + # Fire ID random effect
+ f(spatial, model = spde, group = spatial.group) # spatial effect
 
 # fit the model                     
 model_bl.frp <- inla(
- mf.frp, data = da, 
+ mf.frp, data = inla.stack.data(stack.frp), 
  family = "gaussian",
- control.predictor = list(compute = TRUE),
+ control.predictor = list(A = inla.stack.A(stack.frp), compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE)
 )
 summary(model_bl.frp)
 
+
 # CBI
+
+# Re-create the INLA stack for CBI
+stack.frp <- inla.stack(
+ data = list(CBIbc_p90 = da$CBIbc_p90),  # Response variable
+ A = list(A, 1),  # Sparse spatial field and identity matrix
+ effects = list(
+  spatial_index,  # Spatial field
+  da %>% 
+   select(fortypnm_gp, erc_dv, vpd_dv, elev, slope, tpi, chili, Fire_ID) %>%  # Covariates
+   as.data.frame()
+ )
+)
 
 # Set up the model formula
 mf.cbi <- CBIbc_p90 ~ 
@@ -223,7 +291,7 @@ gc() # clean up
 
 # Plot posterior effects with credible intervals
 cmap <- c("CBIbc" = "#800026", "FRP" = "#FEB24C") # color map for the response
-ggplot(effects, aes(x = forest_type, y = effect, color = response)) +
+p1 <- ggplot(effects, aes(x = forest_type, y = effect, color = response)) +
  # Plot mean effects
  geom_point(position = position_dodge(width = 0.5), size = 3) +
  # Add credible intervals
@@ -250,14 +318,22 @@ ggplot(effects, aes(x = forest_type, y = effect, color = response)) +
  # Adjust theme
  theme_bw() +
  theme(
-  axis.text.x = element_text(angle = 45, hjust = 1),
+  axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+  axis.text.y = element_text(angle = 0, hjust = 0, size=10),
+  axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),
+  axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
   legend.position = c(0.18, 0.16),
   legend.background = element_rect(
    fill = scales::alpha("white", 0.2), 
    color = NA, size = 0.5),
-  legend.title = element_text(size = 10),
-  legend.text = element_text(size = 9)
+  legend.title = element_text(size = 11),
+  legend.text = element_text(size = 10)
  )
+p1
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_PredominantFORTYP_PosteriorEffects.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
 
 ############
 # Ridge plot
@@ -287,18 +363,34 @@ tidy_combined <- tidy_combined %>%
  mutate(forest_type = str_remove(parameter, "fortypnm_gp"))
 
 # create the plot
-ggplot(tidy_combined, aes(x = x, y = forest_type, height = y, fill = response)) +
+p2 <- ggplot(tidy_combined, aes(x = x, y = forest_type, height = y, fill = response)) +
  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
-  x = "Parameter Value",
-  y = "Dominant Forest Type",
+  x = "Effect relative to aspen",
+  y = "Predominant Forest Type",
   fill = "Response",
-  title = "Posterior Marginals for Forest Type Effects"
  ) +
- scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026")) +
- theme_minimal() +
- theme(axis.text.y = element_text(angle = 45, hjust = 1))
+ scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
+                   labels = c(
+                    "CBI" = "CBI", 
+                    "FRP" = "FRP")) +
+ theme_classic() +
+ theme(axis.text.y = element_text(angle = 0, hjust = 0, size=10),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=10),
+       axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),
+       axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
+       legend.position = c(0.10, 0.86),
+       legend.background = element_rect(
+        fill = scales::alpha("white", 0.4), 
+        color = NA, size = 0.8),
+       legend.title = element_text(size = 11),
+       legend.text = element_text(size = 10))
+p2
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_PredominantFORTYP_PosteriorEffects_Ridge.png')
+ggsave(out_png, dpi=500, bg = 'white')
 
 rm(frp_marginals, cbi_marginals, tidy_marginals, tidy_frp, tidy_cbi, tidy_combined,
    model_bl.cbi, model_bl.frp, da, effects)
@@ -306,24 +398,135 @@ gc() # clean up
 
 
 ##############################################################
-# 2. Predominant forest type + species metrics
-# ~ Effect of predominant forest type, species balive on FRP and CBI relative to aspen 
-# ~ FRP/CBIbc ~ dominant forest type _ (species * balive) + climate + topo
+# 2. Species dominance (basal area) interactions
+# ~ FRP/CBIbc ~ (species_balive)^2 + climate + topo
 
+# Prepare the grid data for the model
+da <- grid_tm %>%
+ # Pivot the data to wide format: each species is a column
+ pivot_wider(
+  id_cols = c(grid_index, Fire_ID, log_frp_max_day, CBIbc_p90, fortypnm_gp,
+              erc_dv, vpd_dv, elev, slope, tpi, chili),  # Retain relevant variables
+  names_from = species_gp_n,  # Use species name as column names
+  values_from = balive,  # Use BALIVE as values for each species
+  names_prefix = "balive_"  # Prefix columns with "balive_"
+ ) %>%
+ # Replace NA with 0 (indicates species absence in grid cell)
+ mutate(across(starts_with("balive_"), ~ replace_na(., 0))) %>%
+ # keep just one row per grid cell
+ distinct(grid_index, Fire_ID, fortypnm_gp, .keep_all = TRUE)
+glimpse(da)
+
+
+#########################
+# setup the model formula
 mf.frp <- log_frp_max_day ~ 
- fortypnm_gp + # predominant forest type
- (species_gp_n * balive) + # species dominance (balive)
- erc_dv + vpd_dv + elev + slope + tpi + chili + # climate + topo
- f(Fire_ID, model = "iid") # random effect for Fire ID
+ (balive_aspen + balive_lodgepole + balive_mixed_conifer + 
+  balive_ponderosa + balive_spruce_fir + balive_piñon_juniper)^2 +  # Main effects and interactions
+ erc_dv + vpd_dv + elev + slope + tpi + chili +  # Climate and topography predictors
+ f(Fire_ID, model = "iid")  # Random effect for Fire ID
 
 # fit the model                     
 model_bl_tm.frp <- inla(
- mf.frp, data = grid_tm, 
+ mf.frp, data = da, 
  family = "gaussian",
  control.predictor = list(compute = TRUE, link = 1),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE)
 )
 summary(model_bl_tm.frp)
+
+
+###########################
+# Extract interaction terms
+effects <- as.data.frame(model_bl_tm.frp$summary.fixed) %>%
+ rownames_to_column(var = "parameter") %>%
+ filter(str_detect(parameter, ":")) %>%
+ separate(parameter, into = c("species1", "species2"), sep = ":") %>%
+ mutate(across(everything(), ~ str_replace(., "balive_", "")))
+
+# Prepare data for heatmap
+heatmap_da <- effects %>%
+ select(species1, species2, mean) %>%
+ pivot_wider(names_from = species2, values_from = mean) %>%
+ column_to_rownames(var = "species1")
+
+# Convert to long format for ggplot
+heatmap_l <- melt(heatmap_da, varnames = c("Species1", "Species2"), value.name = "Effect")
+
+# Plot heatmap
+ggplot(heatmap_l, aes(x = Species2, y = Species1, fill = Effect)) +
+ geom_tile(color = "white") +
+ scale_fill_gradient2(
+  low = "blue", mid = "white", high = "red", midpoint = 0,
+  limits = c(min(heatmap_l$Effect, na.rm = TRUE), max(heatmap_l$Effect, na.rm = TRUE))
+ ) +
+ labs(
+  title = "Pairwise Interaction Effects on FRP",
+  x = "Co-occurring Species",
+  y = "Dominant Species",
+  fill = "Effect"
+ ) +
+ theme_minimal() +
+ theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+
+
+
+##########################################################
+# Extract fixed effect marginals for the interaction terms
+
+# mf.frp <- log_frp_max_day ~ 
+#  fortypnm_gp + # predominant forest type
+#  (species_gp_n * balive) + # species dominance (balive)
+#  erc_dv + vpd_dv + elev + slope + tpi + chili + # climate + topo
+#  f(Fire_ID, model = "iid") # random effect for Fire ID
+
+marginals <- model_bl_tm.frp$marginals.fixed
+
+# Define a function to tidy marginals for interaction terms
+tidy_int <- function(marginals) {
+ tibble::tibble(
+  parameter = names(marginals),
+  data = purrr::map(marginals, ~ as.data.frame(.x))
+ ) %>%
+  unnest(data) %>%
+  filter(str_detect(parameter, "species_gp_n") & str_detect(parameter, ":balive")) %>%
+  mutate(
+   species = str_remove(parameter, ":balive"),
+   species = str_remove(species, "species_gp_n"),
+   species = str_replace(species, "_", " "),
+   effect_type = "Interaction"
+  )
+}
+
+# Tidy the marginals for the interaction terms
+tidy_int_df <- tidy_int(marginals)
+
+# Create ridge plot for interaction terms
+ggplot(tidy_int_df, aes(x = x, y = species, height = y, fill = effect_type)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect Magnitude",
+  y = "Co-occurring Species",
+  fill = "Effect Type"
+ ) +
+ scale_fill_manual(values = c("Interaction" = "#FEB24C")) +
+ theme_classic() +
+ theme(
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 11, margin = margin(r = 10)),
+  axis.title.x = element_text(size = 11, margin = margin(t = 10)),
+  legend.position = "top"
+ )
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_Species-BALIVE_PosteriorEffects_Ridge.png')
+ggsave(out_png, dpi=500, bg = 'white')
 
 
 
