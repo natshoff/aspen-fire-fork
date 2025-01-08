@@ -30,44 +30,50 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   frp_max_day > 1, # make sure daytime FRP is not 0
  ) %>% 
  # create a numeric fire ID
- mutate(Fire_ID = as.factor(Fire_ID),
-        Fire_ID_nm = as.numeric(as.character(Fire_ID)),
-        # Format species names consistently
-        fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
-        fortypnm_gp = str_to_lower(fortypnm_gp),
-        species_gp_n = str_replace_all(species_gp_n, "-", "_"),
-        species_gp_n = str_to_lower(species_gp_n),
-        # proportion of contributing AFD during daytime observations
-        day_prop = day_count / afd_count,
-        # log-scaled outcomes
-        log_frp_max = log(frp_max + 1e-5),
-        log_frp_csum = log(frp_csum + 1e-5),
-        log_frp_max_day = log(frp_max_day + 1e-5),
-        log_frp_max_night = log(frp_max_night + 1e-5),
-        # Create a "season" variable based on the month
-        season = case_when(
-         month %in% c(3, 4, 5) ~ "spring",
-         month %in% c(6, 7, 8) ~ "summer",
-         month %in% c(9, 10, 11) ~ "fall"
-        ),
-        # Year/season interaction
-        year_season = interaction(year, season, drop = TRUE),
-        # make sure factor variables are set
-        fortypnm_gp = as.factor(fortypnm_gp),
-        species_gp_n = as.factor(species_gp_n),
-        Fire_ID = as.factor(Fire_ID),
-        # create an aspen presence flag
-        aspen_pres = if_else(species_gp_n == "aspen" & balive > 0, 1, 0),
-        # scale continuous predictors
-        across(
-         c(balive, badead, tpa_live, tpa_dead,
-           vpd_dv, erc_dv, elev, slope, tpi, chili),
-         ~ as.numeric(scale(.))
-        ),
-        # center/scale abundance and dominance
-        sp_abundance_ld_c = sp_abundance_ld - mean(sp_abundance_ld, na.rm = TRUE),
-        sp_dominance_ld_c = sp_dominance_ld - mean(sp_dominance_ld, na.rm = TRUE)) %>%
- # be sure there are no duplicate rows
+ mutate(
+  # Set the random effects (IDs) as numeric factors
+  Fire_ID = as.numeric(as.factor(Fire_ID)),
+  grid_index = as.numeric(as.factor(grid_index)),
+  # Format species names consistently
+  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
+  fortypnm_gp = str_to_lower(fortypnm_gp),
+  species_gp_n = str_replace_all(species_gp_n, "-", "_"),
+  species_gp_n = str_to_lower(species_gp_n),
+  # make sure factor variables are set for species names
+  fortypnm_gp = as.factor(fortypnm_gp),
+  species_gp_n = as.factor(species_gp_n),
+  # proportion of contributing AFD during daytime observations
+  day_prop = day_count / afd_count,
+  # log-scaled outcomes
+  log_frp_max = log(frp_max + 1e-5),
+  log_frp_csum = log(frp_csum + 1e-5),
+  log_frp_max_day = log(frp_max_day + 1e-5),
+  log_frp_max_night = log(frp_max_night + 1e-5),
+  # Create a "season" variable based on the month
+  season = case_when(
+   month %in% c(3, 4, 5) ~ "spring",
+   month %in% c(6, 7, 8) ~ "summer",
+   month %in% c(9, 10, 11) ~ "fall"
+  ),
+  # Year/season interaction
+  year_season = interaction(year, season, drop = TRUE),
+  # scale the percentages
+  fortyp_pct = fortyp_pct / 100,
+  forest_pct = forest_pct / 100,
+  # center and scale continuous predictor variables
+  across(
+   c(balive, badead, tpa_live, tpa_dead,
+     tree_ht_live, tree_ht_dead, shannon_h_mn,
+     erc, vpd, vpd_dv, erc_dv, 
+     elev, slope, tpi, chili),
+   ~ as.numeric(scale(.))
+  ),
+  # center/scale abundance and dominance
+  sp_abundance_ld_c = sp_abundance_ld - mean(sp_abundance_ld, na.rm = TRUE),
+  sp_dominance_ld_c = sp_dominance_ld - mean(sp_dominance_ld, na.rm = TRUE),
+  # create an aspen presence flag
+  aspen_pres = if_else(species_gp_n == "aspen" & balive > 0, 1, 0)) %>%
+ # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
 
@@ -146,111 +152,48 @@ levels(grid_tm$fortypnm_gp)
 
 # create a data frame for just the predominant forest type
 da <- grid_tm %>%
- select(grid_index, Fire_ID, year, # random effects 
+ select(grid_index, Fire_ID, year, year_season, # random effects 
         log_frp_max_day, CBIbc_p90, # response variables
         fortypnm_gp, fortyp_pct, forest_pct, # forest type and percent cover
-        erc_dv, vpd_dv, elev, slope, tpi, chili, # climate + topo
+        erc, erc_dv, vpd, vpd_dv, elev, slope, tpi, chili, # climate + topo
+        aspen_pres, # whether aspen is present in the grid
         x, y # grid centroid coordinate for spatial fields model
         ) %>%
  filter(fortyp_pct > 50) %>% # only grids where predominant species cover > 50%
- # keep just one row per grid cell
+ # keep just one row per grid cell by predominant type
  distinct(grid_index, Fire_ID, fortypnm_gp, .keep_all = TRUE)
- 
-# Create the spatial fields model (SPDE)
-# Extract coordinates from wide data frame
-coords <- da %>% distinct(grid_index, x, y)
-coords_mat <- as.matrix(coords[, c("x", "y")])
-# Create a shared spatial mesh
-mesh <- inla.mesh.2d(
- loc = coords_mat,
- max.edge = c(1, 5),  
- cutoff = 0.01 # Minimum distance between points
-)
-plot(mesh)
 
-# define the stochastic partial difference equation (SPDE)
-spde <- inla.spde2.pcmatern(
- mesh = mesh,
- alpha = 2,  # Smoothness parameter
- prior.range = c(10, 0.01),  # Prior for spatial range
- prior.sigma = c(1, 0.01)    # Prior for variance
-)
-
-# create the A-matrix (linking mesh to coords)
-A <- inla.spde.make.A(
- mesh = mesh,
- loc = coords_mat,
- group = as.numeric(as.factor(da$Fire_ID))
-)
-
-# Define the spatial index
-spatial_index <- inla.spde.make.index(
- name = "spatial",
- n.spde = spde$n.spde,
- group = as.numeric(as.factor(da$Fire_ID)),
- n.group = length(unique(da$Fire_ID))
-)
-
-# Rename the group variable explicitly
-names(spatial_index) <- c("spatial", "spatial.group", "spatial.repl")
-
-# Create the INLA stack
-stack.frp <- inla.stack(
- data = list(log_frp_max_day = da$log_frp_max_day),  # Response variable
- A = list(A, 1),  # Sparse spatial field and identity matrix
- effects = list(
-  spatial_index,  # Spatial field
-  da %>% 
-   select(fortypnm_gp, erc_dv, vpd_dv, elev, slope, tpi, chili, Fire_ID) %>%  # Covariates
-   as.data.frame()
- )
-)
-
+#####
 # FRP
-
 # Set up the model formula
 mf.frp <- log_frp_max_day ~ 
  fortypnm_gp + # dominant forest type
- erc_dv + vpd_dv + elev + slope + tpi + chili + # climate+topography
- f(Fire_ID, model = "iid") + # Fire ID random effect
- f(spatial, model = spde, group = spatial.group) # spatial effect
+ erc + vpd + elev + slope + tpi + chili + # climate+topography
+ f(grid_index, model="iid") # grid-level random effect
 
 # fit the model                     
 model_bl.frp <- inla(
- mf.frp, data = inla.stack.data(stack.frp), 
+ mf.frp, data = da, 
  family = "gaussian",
- control.predictor = list(A = inla.stack.A(stack.frp), compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE)
+ control.predictor = list(compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
 )
 summary(model_bl.frp)
 
-
+#####
 # CBI
-
-# Re-create the INLA stack for CBI
-stack.frp <- inla.stack(
- data = list(CBIbc_p90 = da$CBIbc_p90),  # Response variable
- A = list(A, 1),  # Sparse spatial field and identity matrix
- effects = list(
-  spatial_index,  # Spatial field
-  da %>% 
-   select(fortypnm_gp, erc_dv, vpd_dv, elev, slope, tpi, chili, Fire_ID) %>%  # Covariates
-   as.data.frame()
- )
-)
-
 # Set up the model formula
 mf.cbi <- CBIbc_p90 ~ 
  fortypnm_gp + # dominant forest type
- erc_dv + vpd_dv + elev + slope + tpi + chili + # climate+topography
- f(Fire_ID, model = "iid") # Fire ID random effect
+ erc + vpd + elev + slope + tpi + chili + # climate+topography
+ f(grid_index, model = "iid") # grid-level random effect
 
 # fit the model                     
 model_bl.cbi <- inla(
  mf.cbi, data = da, 
  family = "gaussian",
  control.predictor = list(compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE)
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
 )
 summary(model_bl.cbi)
 
@@ -397,6 +340,66 @@ rm(frp_marginals, cbi_marginals, tidy_marginals, tidy_frp, tidy_cbi, tidy_combin
 gc() # clean up
 
 
+####################################################
+# Extend to include a fully spatial model using SPDE
+
+# Create the spatial fields model (SPDE)
+# Extract coordinates from wide data frame
+coords <- da %>% distinct(grid_index, x, y)
+coords_mat <- as.matrix(coords[, c("x", "y")])
+# Create a shared spatial mesh
+mesh <- inla.mesh.2d(
+ loc = coords_mat,
+ max.edge = c(1, 5),  
+ cutoff = 0.01 # Minimum distance between points
+)
+plot(mesh)
+
+# define the stochastic partial difference equation (SPDE)
+spde <- inla.spde2.pcmatern(
+ mesh = mesh,
+ alpha = 2,  # Smoothness parameter
+ prior.range = c(10, 0.01),  # Prior for spatial range
+ prior.sigma = c(1, 0.01)    # Prior for variance
+)
+
+# create the A-matrix (linking mesh to coords)
+A <- inla.spde.make.A(
+ mesh = mesh,
+ loc = coords_mat,
+ group = as.numeric(as.factor(da$Fire_ID))
+)
+
+# Define the spatial index
+spatial_index <- inla.spde.make.index(
+ name = "spatial",
+ n.spde = spde$n.spde,
+ group = as.numeric(as.factor(da$Fire_ID)),
+ n.group = length(unique(da$Fire_ID))
+)
+
+# Rename the group variable explicitly
+names(spatial_index) <- c("spatial", "spatial.group", "spatial.repl")
+
+# Create the INLA stack
+stack.frp <- inla.stack(
+ data = list(log_frp_max_day = da$log_frp_max_day),  # Response variable
+ A = list(A, 1),  # Sparse spatial field and identity matrix
+ effects = list(
+  spatial_index,  # Spatial field
+  da %>% 
+   select(fortypnm_gp, erc_dv, vpd_dv, elev, slope, tpi, chili, Fire_ID) %>%  # Covariates
+   as.data.frame()
+ )
+)
+
+
+
+
+
+
+
+
 ##############################################################
 # 2. Species dominance (basal area) interactions
 # ~ FRP/CBIbc ~ (species_balive)^2 + climate + topo
@@ -470,6 +473,7 @@ ggplot(heatmap_l, aes(x = Species2, y = Species1, fill = Effect)) +
  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 
+##########################################################
 
 
 
