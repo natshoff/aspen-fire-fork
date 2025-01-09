@@ -9,6 +9,7 @@ library(ggridges)
 library(reshape2)
 library(spdep)
 library(patchwork)
+library(forcats)
 
 # Environment variables
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
@@ -64,21 +65,27 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   forest_pct = forest_pct / 100,
   # center and scale continuous predictor variables
   across(
-   c(balive, badead, tpa_live, tpa_dead,
-     tree_ht_live, tree_ht_dead, shannon_h_mn,
-     erc, vpd, vpd_dv, erc_dv, 
-     elev, slope, tpi, chili),
+   c(ba_live, ba_dead, ba_ld, # live/dead basal area
+     tpp_live, tpp_dead, tpp_ld, # live/dead trees/pixel
+     qmd_live, qmd_dead, qmd_ld, # live/dead quadratic mean diameter
+     tree_ht_live, tree_ht_dead, # live/dead tree height
+     erc, vpd, vpd_dv, erc_dv, # climate
+     elev, slope, tpi, chili # topography
+    ),
    ~ as.numeric(scale(.))
   ),
   # center/scale abundance and dominance
-  sp_abundance_ld_c = sp_abundance_ld - mean(sp_abundance_ld, na.rm = TRUE),
-  sp_dominance_ld_c = sp_dominance_ld - mean(sp_dominance_ld, na.rm = TRUE),
+  ba_ld_pr = ba_ld_pr - mean(ba_ld_pr, na.rm = TRUE),
+  tpp_ld_pr = tpp_ld_pr - mean(tpp_ld_pr, na.rm = TRUE),
+  qmd_ld_pr = qmd_ld_pr - mean(qmd_ld_pr, na.rm = TRUE),
   # create an aspen presence flag
-  aspen_pres = if_else(species_gp_n == "aspen" & balive > 0, 1, 0)) %>%
+  aspen_pres = if_else(species_gp_n == "aspen" & ba_live > 0, 1, 0)) %>%
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
 
+
+########################################################
 # Check on the grid cell counts for daytime observations
 grid_counts <- grid_tm %>%
  distinct(Fire_ID, grid_index) %>% # keep only distinct rows
@@ -125,13 +132,19 @@ grid_tm %>%
       y = "Frequency") +
  theme_minimal()
 
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_ResponseDistribution.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+
 ####################
 # correlation matrix
 # Select only numeric columns and convert factors to dummy variables
 cor_da <- grid_tm %>%
  select(
-  sp_abundance_ld, sp_dominance_ld, balive, tpa_live, tree_ht_live,  # Forest composition metrics
-  badead, tpa_dead, tree_ht_dead,
+  tpp_ld_pr, ba_ld_pr, qmd_ld_pr, 
+  ba_live, tpp_live, qmd_live, tree_ht_live,  # Forest composition metrics
+  ba_dead, tpp_dead, qmd_dead, tree_ht_dead,
   erc, erc_dv, vpd, vpd_dv, elev, slope, tpi, chili  # Climate and topography metrics
  ) %>%
  mutate_if(is.factor, as.numeric)  # Convert factors to numeric (if needed)
@@ -152,6 +165,10 @@ ggcorrplot(
 
 rm(cor_da, cor_mat)
 gc()
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix.png')
+ggsave(out_png, dpi=500, bg = 'white')
 
 
 #===========MODEL SETUP==============#
@@ -202,6 +219,10 @@ mesh <- inla.mesh.2d(
 )
 plot(mesh)
 points(coords_mat, col = "red", pch = 19, cex = 0.5)
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_MeshGrid.png')
+ggsave(out_png, dpi=500, bg = 'white')
 
 # Build the SPDE model
 spde.bl <- inla.spde2.pcmatern(
@@ -295,7 +316,8 @@ summary(model_bl.cbi)
 
 # Extract fixed effects related to fortypnm_gp
 
-# fixed effects for FRP
+#####
+# FRP
 frp.eff <- as.data.frame(model_bl.frp$summary.fixed) %>%
  rownames_to_column(var = "parameter") %>%
  filter(grepl("fortypnm_gp", parameter)) %>%
@@ -307,7 +329,8 @@ frp.eff <- as.data.frame(model_bl.frp$summary.fixed) %>%
   upper = `0.975quant`
  )
 
-# fixed effects for CBIbc
+#####
+# CBI
 cbi.eff <- as.data.frame(model_bl.cbi$summary.fixed) %>%
  rownames_to_column(var = "parameter") %>%
  filter(grepl("fortypnm_gp", parameter)) %>%
@@ -367,7 +390,7 @@ p1 <- ggplot(effects, aes(x = forest_type, y = effect, color = response)) +
  )
 p1
 # save the plot.
-out_png <- paste0(maindir,'figures/INLA_PredominantFORTYP_PosteriorEffects.png')
+out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects.png')
 ggsave(out_png, dpi=500, bg = 'white')
 
 
@@ -393,10 +416,21 @@ tidy_cbi <- tidy_marginals(cbi_marginals, "CBI")
 
 # Combine the data
 tidy_combined <- bind_rows(tidy_frp, tidy_cbi)
+
 # Filter for forest type effects
 tidy_combined <- tidy_combined %>%
  filter(str_detect(parameter, "fortypnm_gp")) %>%
  mutate(forest_type = str_remove(parameter, "fortypnm_gp"))
+
+# Compute mean effect sizes for reordering
+effect_means <- tidy_combined %>%
+ group_by(forest_type, response) %>%
+ summarize(mean_effect = mean(x), .groups = "drop") %>%
+ filter(response == "FRP")
+
+tidy_combined <- tidy_combined %>%
+ left_join(effect_means %>% select(forest_type, mean_effect), by = "forest_type") %>%
+ mutate(forest_type = fct_reorder(forest_type, mean_effect, .desc = TRUE))
 
 # create the plot
 p2 <- ggplot(tidy_combined, aes(x = x, y = forest_type, height = y, fill = response)) +
@@ -412,11 +446,11 @@ p2 <- ggplot(tidy_combined, aes(x = x, y = forest_type, height = y, fill = respo
                     "CBI" = "CBI", 
                     "FRP" = "FRP")) +
  theme_classic() +
- theme(axis.text.y = element_text(angle = 0, hjust = 0, size=10),
-       axis.text.x = element_text(angle = 0, hjust = 0, size=10),
+ theme(axis.text.y = element_text(angle = 0, hjust = 0, size=11),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=11),
        axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),
        axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
-       legend.position = c(0.10, 0.86),
+       legend.position = c(0.89, 0.86),
        legend.background = element_rect(
         fill = scales::alpha("white", 0.4), 
         color = NA, size = 0.8),
@@ -425,14 +459,16 @@ p2 <- ggplot(tidy_combined, aes(x = x, y = forest_type, height = y, fill = respo
 p2
 
 # save the plot.
-out_png <- paste0(maindir,'figures/INLA_PredominantFORTYP_PosteriorEffects_Ridge.png')
-ggsave(out_png, dpi=500, bg = 'white')
+out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects_Ridge.png')
+ggsave(out_png, dpi=300, bg = 'white')
 
 
 ######################################
 # Visualize the spatial random effects
-spat.eff.frp <- inla.spde.make.A(mesh, coords_mat) %*% model_bl.frp$summary.random$spatial_field$mean
-spat.eff.cbi <- inla.spde.make.A(mesh, coords_mat) %*% model_bl.cbi$summary.random$spatial_field$mean
+spat.eff.frp <- inla.spde.make.A(mesh, coords_mat) %*% 
+ model_bl.frp$summary.random$spatial_field$mean
+spat.eff.cbi <- inla.spde.make.A(mesh, coords_mat) %*% 
+ model_bl.cbi$summary.random$spatial_field$mean
 # Add spatial effects to the data frame
 spat.eff.df <- cbind(as.data.frame(coords_mat), spat_eff_frp = as.vector(spat.eff.frp))
 spat.eff.df <- cbind(spat.eff.df, spat_eff_cbi = as.vector(spat.eff.cbi))
@@ -459,8 +495,14 @@ cbi_map <- ggplot(spat.sf) +
 # Combine maps
 frp_map + cbi_map
 
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_FORTYPNM_SpatialFieldsMap.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+
+########################################
 # Density plot of spatial random effects
-ggplot(spat.eff.df, aes(x = spat_eff_frp)) +
+p.frp <- ggplot(spat.eff.df, aes(x = spat_eff_frp)) +
  geom_density(fill = "blue", alpha = 0.5) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  theme_minimal() +
@@ -470,7 +512,7 @@ ggplot(spat.eff.df, aes(x = spat_eff_frp)) +
   y = "Density"
  )
 
-ggplot(spat.eff.df, aes(x = spat_eff_cbi)) +
+p.cbi <- ggplot(spat.eff.df, aes(x = spat_eff_cbi)) +
  geom_density(fill = "blue", alpha = 0.5) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  theme_minimal() +
@@ -479,9 +521,16 @@ ggplot(spat.eff.df, aes(x = spat_eff_cbi)) +
   x = "Spatial Effect",
   y = "Density"
  )
+
+p.frp + p.cbi
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_FORTYPNM_SpatialFieldsDistribution.png')
+ggsave(out_png, dpi=500, bg = 'white')
 
 # Tidy up
-rm(spat.eff.frp, spat.eff.cbi, spat.eff.df, spat.sf)
+rm(spat.eff.frp, spat.eff.cbi, spat.eff.df, spat.sf, p.frp, p.cbi)
+gc()
 
 ############################################
 # Contributions to explaining model variance
@@ -533,17 +582,16 @@ ggplot(var.contr, aes(x = Component, y = Proportion, fill = Component)) +
   y = "Proportion of Variance Explained"
  )
 
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_FORTYPNM_VarianceContributions.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
 ###########
 # tidy up !
 rm(frp_marginals, cbi_marginals, tidy_marginals, tidy_frp, tidy_cbi, tidy_combined,
    model_bl.cbi, model_bl.frp, da, effects, res.var, res.prec, grid.var, grid.prec,
    spat.var, spat.sd, fixed.var, fixed.eff, total.var, var.contr)
 gc() # garbage clean up
-
-
-####################################################
-# Extend to include a fully spatial model using SPDE
-
 
 
 
@@ -564,11 +612,11 @@ da <- grid_tm %>%
   id_cols = c(grid_index, Fire_ID, log_frp_max_day, CBIbc_p90, fortypnm_gp,
               erc_dv, vpd_dv, elev, slope, tpi, chili),  # Retain relevant variables
   names_from = species_gp_n,  # Use species name as column names
-  values_from = balive,  # Use BALIVE as values for each species
-  names_prefix = "balive_"  # Prefix columns with "balive_"
+  values_from = ba_live,  # Use BALIVE as values for each species
+  names_prefix = "ba_live_"  # Prefix columns with "balive_"
  ) %>%
  # Replace NA with 0 (indicates species absence in grid cell)
- mutate(across(starts_with("balive_"), ~ replace_na(., 0))) %>%
+ mutate(across(starts_with("ba_live_"), ~ replace_na(., 0))) %>%
  # keep just one row per grid cell
  distinct(grid_index, Fire_ID, fortypnm_gp, .keep_all = TRUE)
 glimpse(da)
