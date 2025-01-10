@@ -63,6 +63,8 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   # scale the percentages
   fortyp_pct = fortyp_pct / 100,
   forest_pct = forest_pct / 100,
+  # create an aspen presence flag based on abundance
+  aspen_flag = if_else(species_gp_n == "aspen" & tpp_live > 0, 1, 0),
   # center and scale continuous predictor variables
   across(
    c(ba_live, ba_dead, ba_ld, # live/dead basal area
@@ -77,12 +79,96 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   # center/scale abundance and dominance
   ba_ld_pr = ba_ld_pr - mean(ba_ld_pr, na.rm = TRUE),
   tpp_ld_pr = tpp_ld_pr - mean(tpp_ld_pr, na.rm = TRUE),
-  qmd_ld_pr = qmd_ld_pr - mean(qmd_ld_pr, na.rm = TRUE),
-  # create an aspen presence flag
-  aspen_pres = if_else(species_gp_n == "aspen" & ba_live > 0, 1, 0)) %>%
+  qmd_ld_pr = qmd_ld_pr - mean(qmd_ld_pr, na.rm = TRUE)
+ ) %>%
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
+
+# calculate the shannon index (H) for grids
+# use both BA and TPP to calculate H
+# also calculate an aspen presence column
+shannon <- grid_tm %>%
+ group_by(grid_index) %>%
+ mutate(
+  # Replace 0 or NA proportions with a small value to avoid log issues
+  ba_live_pr = ifelse(is.na(ba_live_pr) | ba_live_pr == 0, 1e-6, ba_live_pr),
+  tpp_live_pr = ifelse(is.na(tpp_live_pr) | tpp_live_pr == 0, 1e-6, tpp_live_pr),
+ ) %>%
+ # Calculate Shannon index components
+ summarise(
+  H_ba = -sum(ba_live_pr * log(ba_live_pr), na.rm = TRUE),  # Based on basal area proportions
+  H_tpp = -sum(tpp_live_pr * log(tpp_live_pr), na.rm = TRUE),  # Based on trees per pixel proportions
+  aspen_pres = max(aspen_flag),
+  .groups = "drop"
+ )
+
+# merge back to the grid data
+grid_tm <- grid_tm %>%
+ left_join(shannon, by='grid_index')
 glimpse(grid_tm) # check the results
+
+
+########################################################
+# Check on the grid cell counts for daytime observations
+grid_counts <- grid_tm %>%
+ distinct(Fire_ID, grid_index) %>% # keep only distinct rows
+ group_by(Fire_ID) %>%
+ summarise(n_grids = n())
+summary(grid_counts)
+quantile(grid_counts$n_grids, probs = seq(.1, .9, by = .1))
+
+# Identify fires with n_grids below the 10th percentile
+idx <- grid_counts %>%
+ filter(n_grids < quantile(grid_counts$n_grids, probs = 0.2)) %>%
+ pull(Fire_ID)
+length(idx)
+
+# filter the data frame to remove these fires
+grid_tm <- grid_tm %>%
+ filter(!Fire_ID %in% idx)
+
+# tidy up!
+rm(shannon, grid_counts, idx)
+gc()
+
+
+#===========EXPLORE THE DATA==============#
+
+######################################
+# Plot distribution of species metrics
+
+######################################
+# correlation matrix for fixed effects
+# Select only numeric columns
+cor_da <- grid_tm %>%
+ select(
+  tpp_ld_pr, ba_ld_pr, qmd_ld_pr, 
+  ba_live, tpp_live, qmd_live, tree_ht_live,  # Live forest composition metrics
+  erc, erc_dv, vpd, vpd_dv, elev, slope, tpi, chili  # Climate and topography metrics
+ ) %>%
+ mutate_if(is.factor, as.numeric)  # Convert factors to numeric (if needed)
+
+# Compute correlation matrix
+cor_mat <- cor(cor_da, use = "complete.obs")
+
+# Plot correlation matrix
+ggcorrplot(
+ cor_mat,
+ method = "circle",  # Circle or square for visualization
+ type = "lower",  # Lower triangle of the correlation matrix
+ lab = TRUE,  # Show correlation values
+ lab_size = 3,
+ tl.cex = 10,  # Text label size
+ colors = c("blue", "white", "red")  # Color gradient
+)
+
+rm(cor_da, cor_mat)
+gc()
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
 
 
 #===========MODEL SETUP==============#
@@ -93,26 +179,56 @@ set.seed(456)
 # make sure aspen is first
 levels(grid_tm$species_gp_n)
 
-##############################################################
-# Model 2. Species composition effects
-# ~ FRP/CBIbc ~ species * (balive + tpp_live + qmd_live) + climate + topo
+########################################
+# Create the spatial fields model (SPDE)
+
+# arrange by grid_index
+grid_tm <- grid_tm %>%
+ arrange(grid_index)
+
+# Extract coordinates as a matrix
+coords_mat <- unique(select(grid_tm, x, y)) %>% as.matrix()
+
+# Create a shared spatial mesh
+mesh <- inla.mesh.2d(
+ loc = coords_mat,                    # Locations (grid centroids)
+ max.edge = c(10, 30),             # Maximum edge lengths (inner and outer)
+ cutoff = 0.1,                      # Minimum distance between points
+ offset = c(1, 3)               # Boundary buffer
+)
+plot(mesh)
+points(coords_mat, col = "red", pch = 19, cex = 0.5)
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_MeshGrid.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+# Build the SPDE model
+spde.fc <- inla.spde2.pcmatern(
+ # Mesh and smoothness parameter
+ mesh = mesh, 
+ alpha = 2,
+ # P(practic.range < 0.3) = 0.5
+ prior.range = c(0.3, 0.5),
+ # P(sigma > 1) = 0.01
+ prior.sigma = c(10, 0.01)
+)
+
+# Compute the projector matrix (A)
+A <- inla.spde.make.A(
+ mesh, # the spatial mesh created above
+ loc = coords_mat
+)
+
+# Assign the spatial index
+field.idx <- inla.spde.make.index("spatial_field", n.spde=mesh$n)
 
 
-# Prepare the grid data for the model
-da <- grid_tm %>%
- # Pivot the data to wide format: each species is a column
- pivot_wider(
-  id_cols = c(grid_index, Fire_ID, log_frp_max_day, CBIbc_p90,
-              erc_dv, vpd_dv, elev, slope, tpi, chili),  # Retain relevant variables
-  names_from = species_gp_n,  # Use species name as column names
-  values_from = ba_live,  # Use BALIVE as values for each species
-  names_prefix = "balive_"  # Prefix columns with "balive_"
- ) %>%
- # Replace NA with 0 (indicates species absence in grid cell)
- mutate(across(starts_with("balive_"), ~ replace_na(., 0))) %>%
- # keep just one row per grid cell
- distinct(grid_index, Fire_ID, fortypnm_gp, .keep_all = TRUE)
-glimpse(da)
+###################################################################
+# Model 2. Effect of species metrics and composition on FRP and CBI
+# ~ FRP/CBIbc ~ species * (ba_live + qmd_live + shannon) + climate + topo
+
+
 
 
 #===========MODEL FITTING==============#

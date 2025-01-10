@@ -208,6 +208,11 @@ head(X)
 
 ########################################
 # Create the spatial fields model (SPDE)
+
+# arrange by grid_index
+da <- da %>%
+ arrange(grid_index)
+
 # Extract coordinates as a matrix
 coords_mat <- as.matrix(select(da, x, y))
 # Create a shared spatial mesh
