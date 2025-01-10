@@ -9,115 +9,100 @@ maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/A
 
 #=========Prep the grid data=========#
 
-fp <- paste0(maindir,'data/tabular/mod/viirs_gridstats_treemap.csv')
+fp <- paste0(maindir,'data/tabular/mod/gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
 grid <- read_csv(fp)
 glimpse(grid)
 
 # calculate the species presence / absence data
 # Define threshold for presence
-dt <- 0.01  # Presence if species contributes ≥ 1% of BALIVE or TPA
+dt = 0.01 # 1% of live basal area
 
 # Calculate presence/absence for each species group
 # Assuming columns like species group contributions: balive_species, tpa_species, etc.
 pres_abs <- grid %>%
- select(grid_index, species_gp_n, sp_dominance_ld, sp_abundance_ld) %>%
+ select(grid_index, species_gp_n, ba_live_pr, tpp_live_pr) %>%
  mutate(
   grid_index = as.character(grid_index),
-  presence_rd = ifelse(is.na(sp_dominance_ld) | sp_dominance_ld < dt, 0, 1),
-  presence_ab = ifelse(is.na(sp_abundance_ld) | sp_abundance_ld < dt, 0, 1)
+  dominance = ifelse(is.na(ba_live_pr) | ba_live_pr < dt, 0, 1),
+  abundance = ifelse(is.na(tpp_live_pr) | tpp_live_pr < dt, 0, 1)
  ) %>%
- distinct(grid_index, species_gp_n, presence_rd)
-
+ distinct(grid_index, species_gp_n, dominance, abundance)
 # check on the table
 head(pres_abs)
 
-# Pivot the data to wide format for presence based on dominance
+# Pivot the data to wide format for presence based on abundance
 pmat <- pres_abs %>%
- filter(presence_rd == 1) %>%  # Use presence based on dominance threshold
- select(grid_index, species_gp_n, presence_rd) %>%
+ select(grid_index, species_gp_n, abundance) %>%
  pivot_wider(
   names_from = species_gp_n, # Species become columns
-  values_from = presence_rd, # Presence values (1/0)
-  values_fill = list(presence_rd = 0)
+  values_from = abundance, # Presence values (1/0)
+  values_fill = 0
  ) %>%
  column_to_rownames("grid_index")  # Set grid_id as rownames
 # View the matrix
 print(head(pmat))
 
 
-#=========Run co-occurrence analysis=========#
+#=========MODEL FIT=========#
 
 pmat <- as.matrix(pmat)
-pmat_t <- t(pmat)
-rm(pmat)
-gc()
 
-# Initialize an empty matrix for probabilities
-species <- rownames(pmat_t)
-cooccur_prob <- matrix(0, nrow = length(species), ncol = length(species),
-                       dimnames = list(species, species))
+# run the co-occurrence model
+coo.model <- cooccur(t(pmat), type = "spp_site", thresh = TRUE, spp_names = TRUE)
+summary(coo.model)  # Overview of results
 
-# Calculate observed and expected co-occurrences
-for (i in 1:(nrow(pmat_t) - 1)) {
- for (j in (i + 1):nrow(pmat_t)) {
-  # Observed co-occurrence
-  observed <- sum(pmat_t[i, ] & pmat_t[j, ])
-  
-  # Marginal totals
-  total_sites <- ncol(pmat_t)
-  sp1_count <- sum(pmat_t[i, ])
-  sp2_count <- sum(pmat_t[j, ])
-  
-  # Expected co-occurrence under independence
-  expected <- (sp1_count * sp2_count) / total_sites
-  
-  # Hypergeometric test
-  p_value <- phyper(observed - 1, sp1_count, total_sites - sp1_count, sp2_count, lower.tail = FALSE)
-  
-  # Assign probabilities
-  cooccur_prob[i, j] <- p_value
-  cooccur_prob[j, i] <- p_value  # Symmetry
- }
-}
+# Built-in plots:
+plot(coo.model)
+pair.profile(coo.model)
 
-# Convert to a data frame for visualization (optional)
-cooccur_prob_df <- as.data.frame(as.table(cooccur_prob))
+#=========PLOTTING PROBABILITIES=========#
 
-# View results
-print(head(cooccur_prob_df))
+# Extract probabilities of co-occurrence
+probs <- as.data.frame(prob.table(coo.model))
+head(probs)
 
-# Exclude self-co-occurrence (optional)
-cooccur_prob_df <- cooccur_prob_df %>%
- filter(Var1 != Var2)
-
-# Create a symmetric matrix (optional, if not already symmetric)
-cooccur_prob_df <- cooccur_prob_df %>%
- mutate(Freq = as.numeric(Freq)) %>%  # Ensure Freq is numeric
- bind_rows(
-  cooccur_prob_df %>%
-   rename(Var1 = Var2, Var2 = Var1)  # Add reverse pair
+# Tidy the data frame for plotting
+# Ensure species names are factors in the same order
+probs <- probs %>%
+ mutate(
+  sp1_name = factor(sp1_name, levels = sort(unique(c(sp1_name, sp2_name)))),
+  sp2_name = factor(sp2_name, levels = sort(unique(c(sp1_name, sp2_name))))
  ) %>%
- distinct()  # Remove duplicates
+ # Filter to include only the lower triangle of the matrix
+ filter(as.numeric(sp1_name) <= as.numeric(sp2_name))
 
-# Ensure factor levels match species order
-cooccur_prob_df <- cooccur_prob_df %>%
- mutate(Var1 = factor(Var1, levels = unique(Var1)),
-        Var2 = factor(Var2, levels = unique(Var2)))
+# map numeric code to species name
+spps <- c("Aspen", "Lodgepole", "Mixed-conifer", "Piñon-juniper", "Ponderosa", "Spruce-fir")
 
-library(ggplot2)
+# Create a lookup table
+species_lookup <- data.frame(
+ id = 1:length(spps),  # Numeric IDs
+ name = spps           # Species names
+)
 
-# Heatmap plot
-ggplot(cooccur_prob_df, aes(x = Var1, y = Var2, fill = Freq)) +
+# Plot a heatmap of species co-occurrence probabilities
+ggplot(probs, aes(x = sp1, y = sp2, fill = prob_cooccur)) +
  geom_tile(color = "white") +
- scale_fill_viridis_c(option = "plasma", na.value = "grey50") +
+ geom_text(aes(label = ifelse(prob_cooccur > 0.01, sprintf("%.2f", prob_cooccur), "")),
+           color = "black", size = 3) +
+ scale_fill_viridis_c(name = "Observed\nProbability", option = "plasma") +
+ # Map species names to numeric IDs for axis labels
+ scale_x_continuous(
+  breaks = unique(probs$sp1),
+  labels = unique(probs$sp1_name)
+ ) +
+ scale_y_continuous(
+  breaks = unique(probs$sp2),
+  labels = unique(probs$sp2_name)
+ ) +
  labs(
-  title = "Species Co-Occurrence Heatmap",
+  title = "Species Co-occurrence Probabilities",
   x = "Species A",
-  y = "Species B",
-  fill = "Co-Occurrence (p-value)"
+  y = "Species B"
  ) +
  theme_minimal() +
  theme(
   axis.text.x = element_text(angle = 45, hjust = 1),
-  axis.text.y = element_text(size = 10)
+  axis.text = element_text(size = 10),
+  panel.grid = element_blank()
  )
