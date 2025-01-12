@@ -214,9 +214,9 @@ da <- grid_tm %>%
 # setup the model formula
 mf.frp <- log_frp_max_day ~ 1 + 
  fortypnm_gp:H_tpp + # species diversity by predominant forest type
- species_gp_n:ba_live_pr + # species TPP proportion
- species_gp_n:qmd_live + # species QMD
- forest_pct + # proportion of basal area that is aspen
+ species_gp_n:ba_live_pr + # species proportion of live basal area
+ species_gp_n:qmd_live + # species quadratic mean diameter
+ forest_pct + # grid-level forest cover
  erc + vpd_dv + elev + slope + tpi + chili # climate + topography
 
 # fit the model
@@ -228,8 +228,10 @@ model_tm <- inla(
 )
 summary(model_tm)
 
+
 ###############################
 # Add fire-level random effects
+# compare models using WAIC and DIC
 
 # update the model formula
 mf.frp <- update(mf.frp, . ~ . + f(Fire_ID, model = "iid", hyper = list(
@@ -244,18 +246,18 @@ model_tm.re <- inla(
 )
 summary(model_tm.re)
 
+
 ########################
 # Compare DIC and WAIC #
 
 cat("Baseline model: \n")
 cat("\tDIC:", model_tm$dic$dic, "\n")
 cat("\tWAIC:", model_tm$waic$waic, "\n\n")
-
 cat("With fire-level random effect: \n")
 cat("\tDIC:", model_tm.re$dic$dic, "\n")
 cat("\tWAIC:", model_tm.re$waic$waic, "\n")
 
-print("Keeping better model...")
+# keep the best model
 if (model_tm$waic$waic > model_tm.re$waic$waic) {
  summary(model_tm.re)
  rm(model_tm)
@@ -266,33 +268,11 @@ if (model_tm$waic$waic > model_tm.re$waic$waic) {
 gc()
 
 
-#####################
-# Fit a model for CBI
-# define a new model formula
-mf.cbi <- CBIbc_p90 ~ 1 + 
- fortypnm_gp:H_tpp + # species diversity by predominant forest type
- species_gp_n:ba_live_pr + # species TPP proportion
- species_gp_n:qmd_live + # species QMD
- forest_pct + # proportion of basal area that is aspen
- erc + vpd_dv + elev + slope + tpi + chili + # climate + topography
- f(Fire_ID, model = "iid", hyper = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.1))  # P(std.dev > 1) = 0.1
- ))
-
-# fit the model
-model_tm.cbi.re <- inla(
- mf.cbi, data = da,
- family = "gaussian",
- control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
-)
-summary(model_tm.cbi.re)
-
-
 #===========POSTERIOR EFFECTS=============#
 
-########################
-# Plotting fixed effects
+
+######################################################
+# Plotting fixed effects for species structure metrics
 # Extract fixed effect marginals
 frp_marginals <- model_tm.re$marginals.fixed
 # Tidy up marginals for key predictors
@@ -334,29 +314,81 @@ rm(frp_marginals, tidy_marginals, tidy_tpp, tidy_qmd, tidy_combined)
 gc()
 
 
+#############
+# all effects
+# Extract marginals for all fixed effects
+all_fixed_marginals <- model_tm.re$marginals.fixed
+
+# Tidy marginals for all fixed effects
+tidy_all_effects <- tibble::tibble(
+ parameter = names(all_fixed_marginals),
+ data = purrr::map(all_fixed_marginals, ~ as.data.frame(.x))
+) %>%
+ unnest(data) %>%
+ filter(parameter != "(Intercept)") %>%  # Exclude the intercept
+ mutate(
+  effect = case_when(
+   str_detect(parameter, "ba_live_pr") ~ "Basal Area Proportion (ba_live_pr)",
+   str_detect(parameter, "qmd_live") ~ "Quadratic Mean Diameter (qmd_live)",
+   str_detect(parameter, "H_tpp") ~ "Shannon Diversity (H_tpp)",
+   str_detect(parameter, "forest_pct") ~ "Forest Percentage",
+   TRUE ~ parameter  # Default for all other fixed effects
+  )
+ )
+
+# Plot all fixed effects in a single ridge plot, excluding the intercept
+ggplot(tidy_all_effects, aes(x = x, y = effect, height = y, fill = effect)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect Size",
+  y = "Fixed Effect",
+  fill = "Effect"
+ ) +
+ theme_minimal()
 
 
-
-
-
-#####
-# CBI
-
-# setup the model formula
-mf.cbi <- CBIbc_p90 ~
- species_gp_n * (ba_live + qmd_live) + # Species and their structure/diversity
- erc + vpd + elev + slope + tpi + chili + # Climate and topography predictors
- f(Fire_ID, model = "iid") + # Fire-level random effect
- f(grid_index, model = "iid") # Grid-level random effect
+#####################
+# Fit a model for CBI
+# define a new model formula
+mf.cbi <- CBIbc_p90 ~ 1 + 
+ fortypnm_gp:H_tpp + # species diversity by predominant forest type
+ species_gp_n:ba_live_pr + # species TPP proportion
+ species_gp_n:qmd_live + # species QMD
+ forest_pct + # proportion of basal area that is aspen
+ erc + vpd_dv + elev + slope + tpi + chili + # climate + topography
+ f(Fire_ID, model = "iid", hyper = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.1))  # P(std.dev > 1) = 0.1
+ ))
 
 # fit the model
-model_bl_tm.cbi <- inla(
- mf.cbi, data = grid_tm,
+model_tm.cbi.re <- inla(
+ mf.cbi, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
 )
-summary(model_bl_tm.cbi)
+summary(model_tm.cbi.re)
+
+
+# #####
+# # CBI
+# 
+# # setup the model formula
+# mf.cbi <- CBIbc_p90 ~
+#  species_gp_n * (ba_live + qmd_live) + # Species and their structure/diversity
+#  erc + vpd + elev + slope + tpi + chili + # Climate and topography predictors
+#  f(Fire_ID, model = "iid") + # Fire-level random effect
+#  f(grid_index, model = "iid") # Grid-level random effect
+# 
+# # fit the model
+# model_bl_tm.cbi <- inla(
+#  mf.cbi, data = grid_tm,
+#  family = "gaussian",
+#  control.predictor = list(compute=T),
+#  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
+# )
+# summary(model_bl_tm.cbi)
 
 
 
