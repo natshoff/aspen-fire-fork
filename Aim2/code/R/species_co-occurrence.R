@@ -85,7 +85,7 @@ ggplot(probs, aes(x = sp1, y = sp2, fill = prob_cooccur)) +
  geom_tile(color = "white") +
  geom_text(aes(label = ifelse(prob_cooccur > 0.01, sprintf("%.2f", prob_cooccur), "")),
            color = "black", size = 3) +
- scale_fill_viridis_c(name = "Observed\nProbability", option = "plasma") +
+ scale_fill_viridis_c(name = "Observed\nProbability", option = "viridis") +
  # Map species names to numeric IDs for axis labels
  scale_x_continuous(
   breaks = unique(probs$sp1),
@@ -96,7 +96,6 @@ ggplot(probs, aes(x = sp1, y = sp2, fill = prob_cooccur)) +
   labels = unique(probs$sp2_name)
  ) +
  labs(
-  title = "Species Co-occurrence Probabilities",
   x = "Species A",
   y = "Species B"
  ) +
@@ -106,3 +105,12 @@ ggplot(probs, aes(x = sp1, y = sp2, fill = prob_cooccur)) +
   axis.text = element_text(size = 10),
   panel.grid = element_blank()
  )
+
+##############
+# Network plot
+
+# Create a data frame of the nodes in the network. 
+nodes <- data.frame(id = 1:nrow(pmat),
+                    label = rownames(pmat),
+                    color = "#606482",
+                    shadow = TRUE)

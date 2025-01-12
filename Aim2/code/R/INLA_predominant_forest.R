@@ -78,11 +78,13 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   ba_ld_pr = ba_ld_pr - mean(ba_ld_pr, na.rm = TRUE),
   tpp_ld_pr = tpp_ld_pr - mean(tpp_ld_pr, na.rm = TRUE),
   qmd_ld_pr = qmd_ld_pr - mean(qmd_ld_pr, na.rm = TRUE),
-  # create an aspen presence flag
-  aspen_pres = if_else(species_gp_n == "aspen" & ba_live > 0, 1, 0)) %>%
+  # create an species presence flag
+  presence = if_else(ba_live > 0 | tpp_live > 0, 1, 0)) %>%
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
+
+# save this tidy data frame for subsequent models
 
 
 ########################################################
@@ -276,7 +278,8 @@ mf.frp <- log_frp_max_day ~
  erc + vpd + elev + slope + tpi + chili + # climate+topography
  f(Fire_ID, model="iid") + # fire-level random effect
  f(grid_index, model="iid") + # grid-level random effect
- f(spatial_field, model=spde.bl) # spatial model
+ f(spatial_field, model=spde.bl) + # spatial model
+ f(year_season, model = "rw1") # temporal model
 
 # fit the model                     
 model_bl.frp <- inla(
@@ -323,6 +326,11 @@ model_bl.cbi <- inla(
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
 )
 summary(model_bl.cbi)
+
+
+# Tidy up !
+rm(A, coords_mat, field.idx, mesh, spde.bl, spde.bl.alt, stk.cbi, stk.frp, var.contr.full, X)
+gc()
 
 
 #===========Plotting Posterior Effects============#
@@ -430,6 +438,11 @@ tidy_cbi <- tidy_marginals(cbi_marginals, "CBI")
 # Combine the data
 tidy_combined <- bind_rows(tidy_frp, tidy_cbi)
 
+# pull out the climate + topo
+climate_topo <- tidy_combined %>%
+ filter(parameter %in% c("erc", "vpd", "elev", "slope", "tpi", "chili")) %>%
+ mutate(parameter = factor(parameter, levels = c("erc", "vpd", "elev", "slope", "tpi", "chili")))
+
 # Filter for forest type effects
 tidy_combined <- tidy_combined %>%
  filter(str_detect(parameter, "fortypnm_gp")) %>%
@@ -474,6 +487,36 @@ p2
 # save the plot.
 out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects_Ridge.png')
 ggsave(out_png, dpi=300, bg = 'white')
+
+# Plot the climate + topo effects
+p_climate_topo <- ggplot(climate_topo, aes(x = x, y = parameter, height = y, fill = response)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect size",
+  y = "Climate/Topography Predictor",
+  fill = "Response"
+ ) +
+ scale_fill_manual(
+  values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
+  labels = c("FRP" = "Maximum Daytime FRP", "CBI" = "90th Percentile CBIbc")
+ ) +
+ theme_classic() +
+ theme(
+  axis.text.y = element_text(size = 11),
+  axis.text.x = element_text(size = 11),
+  axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),
+  axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
+  legend.position = "top",
+  legend.title = element_text(size = 11),
+  legend.text = element_text(size = 10)
+ )
+p_climate_topo
+
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_ClimateTopo_PosteriorEffects_Ridge.png')
+ggsave(out_png, plot = p_climate_topo, dpi = 300, bg = 'white')
+
 
 
 ######################################
@@ -545,45 +588,34 @@ gc()
 
 ############################################
 # Contributions to explaining model variance
-
 # Extract variance components for random effects
-############################################
-# Contributions to Explaining Model Variance
 
 # Compute variance contributions for FRP
 res.prec <- model_bl.frp$summary.hyperpar["Precision for the Gaussian observations", "mean"]
 res.var <- 1 / res.prec
-
 grid.prec <- model_bl.frp$summary.hyperpar["Precision for grid_index", "mean"]
 grid.var <- 1 / grid.prec
-
 fire.prec <- model_bl.frp$summary.hyperpar["Precision for Fire_ID", "mean"]
 fire.var <- ifelse(is.na(fire.prec), 0, 1 / fire.prec) # Handle Fire_ID precision if zero or undefined
-
 spat.sd <- model_bl.frp$summary.hyperpar["Stdev for spatial_field", "mean"]
 spat.var <- spat.sd^2
-
 fixed.eff <- model_bl.frp$summary.fitted.values$mean
 fixed.var <- var(fixed.eff, na.rm = TRUE)
-
+# get the total variance
 total.var <- res.var + fixed.var + grid.var + fire.var + spat.var
 
 # Compute variance contributions for CBI
 res.prec.cbi <- model_bl.cbi$summary.hyperpar["Precision for the Gaussian observations", "mean"]
 res.var.cbi <- 1 / res.prec.cbi
-
 grid.prec.cbi <- model_bl.cbi$summary.hyperpar["Precision for grid_index", "mean"]
 grid.var.cbi <- 1 / grid.prec.cbi
-
 fire.prec.cbi <- model_bl.cbi$summary.hyperpar["Precision for Fire_ID", "mean"]
 fire.var.cbi <- ifelse(is.na(fire.prec.cbi), 0, 1 / fire.prec.cbi) # Handle Fire_ID precision if zero or undefined
-
 spat.sd.cbi <- model_bl.cbi$summary.hyperpar["Stdev for spatial_field", "mean"]
 spat.var.cbi <- spat.sd.cbi^2
-
 fixed.eff.cbi <- model_bl.cbi$summary.fitted.values$mean
 fixed.var.cbi <- var(fixed.eff.cbi, na.rm = TRUE)
-
+# Total
 total.var.cbi <- res.var.cbi + fixed.var.cbi + grid.var.cbi + fire.var.cbi + spat.var.cbi
 
 # Combine FRP and CBI variance contributions into a single data frame
@@ -620,7 +652,6 @@ ggplot(var.contr.full, aes(x = Component, y = Proportion, fill = Response)) +
  scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026")) +
  theme_light() +
  labs(
-  title = "Variance Contributions by Model Component",
   x = "Model Component",
   y = "Proportion of Variance Explained",
   fill = "Response"
@@ -634,6 +665,7 @@ ggsave(out_png, dpi = 500, bg = 'white')
 ###########
 # tidy up !
 rm(frp_marginals, cbi_marginals, tidy_marginals, tidy_frp, tidy_cbi, tidy_combined,
+   climate_topo, cbi_map, frp_map, effect_means, 
    model_bl.cbi, model_bl.frp, da, effects, res.var, res.prec, grid.var, grid.prec,
    spat.var, spat.sd, fixed.var, fixed.eff, total.var, var.contr)
 gc() # garbage clean up
