@@ -220,50 +220,73 @@ mf.frp <- log_frp_max_day ~ 1 +
  erc + vpd_dv + elev + slope + tpi + chili # climate + topography
 
 # fit the model
-model_tm.frp1 <- inla(
+model_tm <- inla(
  mf.frp, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
 )
-summary(model_tm.frp1)
+summary(model_tm)
 
-################################
-# Add random effects and compare
+###############################
+# Add fire-level random effects
 
 # update the model formula
-mf.frp <- update(mf.frp, . ~ . + f(Fire_ID, model = "iid"))
-
+mf.frp <- update(mf.frp, . ~ . + f(Fire_ID, model = "iid", hyper = list(
+ prec = list(prior = "pc.prec", param = c(1, 0.1))  # P(std.dev > 1) = 0.1
+)))
 # fit the model
-model_tm.frp2 <- inla(
+model_tm.re <- inla(
  mf.frp, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
 )
-summary(model_tm.frp2)
+summary(model_tm.re)
 
-# Compare the two models using WAIC
 ########################
 # Compare DIC and WAIC #
 
-cat("Baseline Model: \n")
-cat("DIC:", model_tm.frp1$dic$dic, "\n")
-cat("WAIC:", model_tm.frp1$waic$waic, "\n\n")
+cat("Baseline model: \n")
+cat("\tDIC:", model_tm$dic$dic, "\n")
+cat("\tWAIC:", model_tm$waic$waic, "\n\n")
 
-cat("With Fire_ID Random Effect: \n")
-cat("DIC:", model_tm.frp2$dic$dic, "\n")
-cat("WAIC:", model_tm.frp2$waic$waic, "\n")
+cat("With fire-level random effect: \n")
+cat("\tDIC:", model_tm.re$dic$dic, "\n")
+cat("\tWAIC:", model_tm.re$waic$waic, "\n")
 
-print("Keeping better model")
-if (model_tm.frp1$waic$waic > model_tm.frp2$waic$waic) {
- model_tm.frp = model_tm.frp2
+print("Keeping better model...")
+if (model_tm$waic$waic > model_tm.re$waic$waic) {
+ summary(model_tm.re)
+ rm(model_tm)
 } else {
- model_tm.frp = model_tm.frp1
+ summary(model_tm)
+ rm(model_tm.re)
 }
-
-rm(model_tm.frp1, model_tm.frp2) # clean up
 gc()
+
+
+#####################
+# Fit a model for CBI
+# define a new model formula
+mf.cbi <- CBIbc_p90 ~ 1 + 
+ fortypnm_gp:H_tpp + # species diversity by predominant forest type
+ species_gp_n:ba_live_pr + # species TPP proportion
+ species_gp_n:qmd_live + # species QMD
+ forest_pct + # proportion of basal area that is aspen
+ erc + vpd_dv + elev + slope + tpi + chili + # climate + topography
+ f(Fire_ID, model = "iid", hyper = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.1))  # P(std.dev > 1) = 0.1
+ ))
+
+# fit the model
+model_tm.cbi.re <- inla(
+ mf.cbi, data = da,
+ family = "gaussian",
+ control.predictor = list(compute=T),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+)
+summary(model_tm.cbi.re)
 
 
 #===========POSTERIOR EFFECTS=============#
@@ -271,7 +294,7 @@ gc()
 ########################
 # Plotting fixed effects
 # Extract fixed effect marginals
-frp_marginals <- model_tm.frp$marginals.fixed
+frp_marginals <- model_tm.re$marginals.fixed
 # Tidy up marginals for key predictors
 tidy_marginals <- function(marginals, predictor) {
  tibble::tibble(
