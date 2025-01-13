@@ -325,12 +325,25 @@ spp_prec_mat <- sparseMatrix(
 )
 # assign col and row names
 rownames(spp_prec_mat) <- colnames(spp_prec_mat) <- spp_coo_gp$spp_pair
-
+rownames(spp_prec_mat) <- make.unique(rownames(spp_prec_mat))
+colnames(spp_prec_mat) <- make.unique(colnames(spp_prec_mat))
 # match factor levels to the precision matrix
 da$spp_pair <- factor(da$spp_pair, levels = rownames(spp_prec_mat))
 
+# verify
+all(levels(da$spp_pair) %in% rownames(spp_prec_mat)) # should return TRUE
+is.factor(da$spp_pair)  # Should return TRUE
+levels(da$spp_pair) == rownames(spp_prec_mat)  # All should be TRUE
+setdiff(levels(da$spp_pair), rownames(spp_prec_mat))  # Should return an empty vector
+setdiff(rownames(spp_prec_mat), levels(da$spp_pair))  # Should also return an empty vector
+isSymmetric(spp_prec_mat)  # Should return TRUE
+all(eigen(spp_prec_mat)$values > 0)  # Should return TRUE
 
+# subset
+used_levels <- levels(da$spp_pair)
+spp_prec_mat <- spp_prec_mat[used_levels, used_levels]
 
+##########################
 # update the model formula
 mf.frp.re.sp <- update(mf.frp.re, . ~ 1 + . + f(spp_pair, model = "generic0", Cmatrix = spp_prec_mat))
 # fit the model
