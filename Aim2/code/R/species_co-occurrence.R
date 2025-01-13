@@ -9,17 +9,46 @@ maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/A
 
 #=========Prep the grid data=========#
 
+# load the aggregated FRP grid with TreeMap and climate/topography
 fp <- paste0(maindir,'data/tabular/mod/gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
-grid <- read_csv(fp)
-glimpse(grid)
+grid_tm <-  read_csv(fp)  %>% # read in the file
+ # get the acquisition year and month
+ mutate(first_obs_date = as.Date(first_obs_date),  # Convert to Date
+        year = year(first_obs_date),              # Extract year
+        month = month(first_obs_date)) %>%
+ # remove missing FRP, prep columns
+ filter(
+  frp_max_day > 0, # make sure daytime FRP is not 0
+ ) %>% 
+ # create a numeric fire ID
+ mutate(
+  # Set the random effects (IDs) as numeric factors
+  Fire_ID = as.numeric(as.factor(Fire_ID)),
+  grid_index = as.numeric(as.factor(grid_index)),
+  # Format species names consistently
+  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
+  fortypnm_gp = str_to_lower(fortypnm_gp),
+  species_gp_n = str_replace_all(species_gp_n, "-", "_"),
+  species_gp_n = str_to_lower(species_gp_n),
+  # make sure factor variables are set for species names
+  fortypnm_gp = as.factor(fortypnm_gp),
+  species_gp_n = as.factor(species_gp_n),
+  # interaction term between forest type and species co-occurring
+  spp_int = interaction(fortypnm_gp, species_gp_n)
+ ) %>%
+ # be sure there are no duplicate rows for grid/fire/species
+ distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
+
+
+#============PREP THE SPECIES DATA=============#
 
 # calculate the species presence / absence data
 # Define threshold for presence
-dt = 0.01 # 1% of live basal area
+dt = 0.05 # 5% of live basal area
 
 # Calculate presence/absence for each species group
 # Assuming columns like species group contributions: balive_species, tpa_species, etc.
-pres_abs <- grid %>%
+pres_abs <- grid_tm %>%
  select(grid_index, species_gp_n, ba_live_pr, tpp_live_pr) %>%
  mutate(
   grid_index = as.character(grid_index),
@@ -61,18 +90,8 @@ pair.profile(coo.model)
 probs <- as.data.frame(prob.table(coo.model))
 head(probs)
 
-# Tidy the data frame for plotting
-# Ensure species names are factors in the same order
-probs <- probs %>%
- mutate(
-  sp1_name = factor(sp1_name, levels = sort(unique(c(sp1_name, sp2_name)))),
-  sp2_name = factor(sp2_name, levels = sort(unique(c(sp1_name, sp2_name))))
- ) %>%
- # Filter to include only the lower triangle of the matrix
- filter(as.numeric(sp1_name) <= as.numeric(sp2_name))
-
 # map numeric code to species name
-spps <- c("Aspen", "Lodgepole", "Mixed-conifer", "Piñon-juniper", "Ponderosa", "Spruce-fir")
+spps <- c("aspen", "lodgepole", "mixed_conifer", "piñon_juniper", "ponderosa", "spruce_fir")
 
 # Create a lookup table
 species_lookup <- data.frame(
@@ -106,11 +125,45 @@ ggplot(probs, aes(x = sp1, y = sp2, fill = prob_cooccur)) +
   panel.grid = element_blank()
  )
 
-##############
-# Network plot
 
-# Create a data frame of the nodes in the network. 
-nodes <- data.frame(id = 1:nrow(pmat),
-                    label = rownames(pmat),
-                    color = "#606482",
-                    shadow = TRUE)
+#############################################################################
+# Identify the top two most dominant species by grid using abundance
+# Create the species pair factor for each grid or label species:pure
+df <- grid_tm %>%
+ select(grid_index, fortypnm_gp, species_gp_n,
+        ba_live_pr, tpp_live_pr) %>%
+ filter(
+  tpp_live_pr >= 0.05
+ )
+
+# Identify top two species by live basal area
+top_spps <- df %>%
+ mutate(species_gp_n = as.character(species_gp_n)) %>%
+ group_by(grid_index) %>%
+ arrange(desc(tpp_live_pr)) %>%  # Sort by live basal area
+ slice_head(n = 2) %>%         # Select the top 2 species
+ summarise(                    # Summarize into a single row per grid
+  spp_1 = first(species_gp_n),         # Most dominant species
+  spp_2 = nth(species_gp_n, 2, default = first(species_gp_n))  # Second most dominant species
+ ) %>%
+ mutate(
+  spp_2 = ifelse(is.na(spp_2), spp_1, spp_2),  # Handle pure stands by filling spp_2 with spp_1
+  spp_pair = if_else(
+   spp_1 == spp_2,
+   paste0(spp_1, ".pure"),  # Label pure stands
+   paste(spp_1, spp_2, sep = ".")  # Label mixed stands
+  )
+ ) %>%
+ # join to the probability of co-occurrence
+ left_join(
+  probs %>% 
+   mutate(spp_pair = interaction(sp1_name, sp2_name)) %>%
+   select(spp_pair, obs_cooccur, prob_cooccur),
+  by = "spp_pair"
+ )
+head(top_spps)
+
+# write this file out
+out_csv <- paste0(maindir,'data/tabular/mod/spp_cooccur_top_spp.csv')
+write.csv(top_spps, out_csv)
+

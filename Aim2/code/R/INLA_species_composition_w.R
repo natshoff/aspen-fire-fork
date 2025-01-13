@@ -69,50 +69,6 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
 
-# calculate the shannon index (H) for grids
-# use both BA and TPP to calculate H
-# also calculate an aspen presence column
-shannon <- grid_tm %>%
- group_by(grid_index) %>%
- mutate(
-  # Replace 0 or NA proportions with a small value to avoid log issues
-  ba_live_pr = ifelse(is.na(ba_live_pr) | ba_live_pr == 0, 1e-6, ba_live_pr),
-  tpp_live_pr = ifelse(is.na(tpp_live_pr) | tpp_live_pr == 0, 1e-6, tpp_live_pr),
- ) %>%
- # Calculate Shannon index components
- summarise(
-  H_ba = -sum(ba_live_pr * log(ba_live_pr), na.rm = TRUE),  # Based on basal area proportions
-  H_tpp = -sum(tpp_live_pr * log(tpp_live_pr), na.rm = TRUE),  # Based on trees per pixel proportions
-  aspen = max(aspen_flag),
-  .groups = "drop"
- )
-
-# get the proportion aspen
-aspen_pr <- grid_tm %>%
- group_by(grid_index) %>%
- summarise(
-  # Total live BA and TPP in the grid
-  total_ba_live = sum(ba_live, na.rm = TRUE),
-  total_tpp_live = sum(tpp_live, na.rm = TRUE),
-  # Aspen-specific live BA and TPP
-  aspen_ba_live = sum(ba_live[species_gp_n == "aspen"], na.rm = TRUE),
-  aspen_tpp_live = sum(tpp_live[species_gp_n == "aspen"], na.rm = TRUE),
-  # Calculate proportions (avoid division by zero)
-  aspen_ba_pr = if_else(total_ba_live > 0, aspen_ba_live / total_ba_live, 0),
-  aspen_tpp_pr = if_else(total_tpp_live > 0, aspen_tpp_live / total_tpp_live, 0)
- ) %>%
- select(grid_index, aspen_ba_pr, aspen_tpp_pr) 
-
-# merge back to the grid data
-# center and scale the fixed effects
-grid_tm <- grid_tm %>%
- left_join(shannon, by="grid_index") %>%
- left_join(aspen_pr, by = "grid_index") %>%
- # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
-
-glimpse(grid_tm) # check the results
-
 
 ########################################################
 # Check on the grid cell counts for daytime observations
@@ -184,22 +140,102 @@ set.seed(456)
 # make sure aspen is first
 levels(grid_tm$species_gp_n)
 
+# list of species names
+spp <- c("aspen", "lodgepole", "mixed_conifer", "piñon_juniper", "ponderosa", "spruce_fir")
+
 # filter where dominance | abundance is >= 5% of grid
 # center and scale fixed effects
-da <- grid_tm %>%
+da_w <- grid_tm %>%
  filter(
-  ba_live_pr >= 0.05
+  ba_live_pr >= 0.05 | tpp_live_pr >= 0.05
  ) %>%
+ pivot_wider(
+  # Keep the grid-level attributes
+  id_cols = c(grid_index, Fire_ID, log_frp_max_day, CBIbc_p90,
+              fortypnm_gp, forest_pct,
+              erc, erc_dv, vpd, vpd_dv,
+              elev, slope, tpi, chili),
+  names_from = species_gp_n,  # Pivot by species name
+  values_from = c(ba_live_pr, tpp_live_pr),  # live BA and TPP proportion
+  names_sep = "_"
+ ) %>%
+ rename_with(
+  ~ str_replace(., "^ba_live_pr_", "ba_"), starts_with("ba_live_pr_")
+ ) %>%
+ rename_with(
+  ~ str_replace(., "^tpp_live_pr_", "tpp_"), starts_with("tpp_live_pr_")
+ ) %>%
+ mutate(
+  # Replace NA with 0 for all BA and TPP columns
+  across(starts_with("ba_"), ~replace_na(., 0)),
+  across(starts_with("tpp_"), ~replace_na(., 0)),
+  # Ensure values are numeric
+  across(c(starts_with("ba_"), starts_with("tpp_")), ~as.numeric(.))
+ ) %>%
+ # calculate the shannon diversity index (H)
+ # based on live basal area proportion
+ rowwise() %>%
+ mutate(
+  H_ba = -sum(c_across(starts_with("ba_")) * log(c_across(starts_with("ba_"))), na.rm = TRUE),
+  H_tpp = -sum(c_across(starts_with("tpp_")) * log(c_across(starts_with("tpp_"))), na.rm = TRUE),
+ ) %>%
+ ungroup() %>%
  mutate(
   # center/scale metrics / fixed effects
   across(
-   c(ba_live, ba_live_pr, ba_ld, ba_ld_pr,
-     tpp_live, tpp_live_pr, tpp_ld, tpp_ld_pr,
-     qmd_live, qmd_live_pr, qmd_ld, qmd_ld_pr,
-     aspen_ba_pr, aspen_tpp_pr, H_ba, H_tpp, tree_ht_live, forest_pct,
-     erc, erc_dv, vpd, vpd_dv, elev, slope, tpi, chili),
-   ~ as.numeric(scale(.))
-  ))
+   c(forest_pct, H_ba, H_tpp,
+     starts_with("ba_"), starts_with("tpp_"),
+     erc, erc_dv, vpd, vpd_dv, 
+     elev, slope, tpi, chili),
+   ~ as.numeric(scale(.)))
+ ) %>%
+ arrange(grid_index)
+glimpse(da_w)
+
+
+
+####################################
+# Generate species covariance matrix
+sp_mat <- da_w %>%
+ select(starts_with("ba_"))
+# compute the pearson correlation matrix
+sp_cov <- cor(sp_mat, method = "spearman")  # Spearman rank correlation
+# ensure positive semi-definite
+eigenvalues <- eigen(sp_cov)$values
+print(eigenvalues)
+# plot the matrix
+ggcorrplot(sp_cov, 
+           method = "circle",
+           type = "lower",
+           lab = TRUE, 
+           lab_size = 3, 
+           colors = c("blue", "white", "red"))# tidy up
+
+############################################################
+# Update the covariance matrix for grid-species combinations
+# Determine the number of grid cells and species
+n_grids <- length(unique(grid_tm$grid_index))
+n_spp <- length(unique(grid_tm$species_gp_n))
+# Construct a block-diagonal covariance matrix
+sp_cov_grid <- Matrix::bdiag(replicate(n_grids, sp_cov, simplify = FALSE))  # Block-diagonal matrix
+dim(sp_cov_grid)  # Should be (n_grids * 6) x (n_grids * 6)
+Matrix::isSymmetric(sp_cov_grid)  # Should return TRUE
+
+# Calculate the Latent Field "species effect"
+lat_spp_effect <- grid_tm %>%
+ # filter to remove 0 spp cover
+ filter(ba_live > 0) %>%
+ mutate(
+  spp_id = as.numeric(as.factor(species_gp_n)),  # Assign numeric IDs to species
+  cidx = as.numeric(as.factor(interaction(grid_index, spp_id, drop = TRUE)))  # Grid × species interaction index
+ )
+glimpse(lat_spp_effect)
+length(unique(lat_spp_effect$cidx))  # Should match the number of unique grid × species combinations
+
+
+# tidy up.
+rm(sp_mat, eigenvalues, sp_cov)
+gc()
 
 
 #===========MODEL FITTING==============#
@@ -213,15 +249,16 @@ da <- grid_tm %>%
 
 # setup the model formula
 mf.frp <- log_frp_max_day ~ 1 + 
- fortypnm_gp:H_tpp + # species diversity by predominant forest type
- species_gp_n:ba_live_pr + # species proportion of live basal area
- species_gp_n:qmd_live + # species quadratic mean diameter
- forest_pct + # grid-level forest cover
+ fortypnm_gp +
+ (ba_aspen + ba_lodgepole + ba_mixed_conifer + 
+   ba_piñon_juniper + ba_ponderosa + ba_spruce_fir)^2 + # pairwise species effects
+ H_tpp + # diversity by TPP
+ forest_pct + # grid-level forest percent
  erc + vpd_dv + elev + slope + tpi + chili # climate + topography
 
 # fit the model
 model_tm <- inla(
- mf.frp, data = da,
+ mf.frp, data = da_w,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
@@ -268,6 +305,7 @@ if (model_tm$waic$waic > model_tm.re$waic$waic) {
 gc()
 
 
+
 #===========POSTERIOR EFFECTS=============#
 
 
@@ -310,19 +348,13 @@ ggplot(tidy_combined, aes(x = x, y = effect, height = y, fill = species)) +
  ) +
  theme_minimal()
 
-rm(frp_marginals, tidy_marginals, tidy_tpp, tidy_qmd, tidy_combined)
-gc()
 
-
-#############
-# all effects
-# Extract marginals for all fixed effects
-all_fixed_marginals <- model_tm.re$marginals.fixed
-
+#########################################
+# Plot all of the posterior fixed effects
 # Tidy marginals for all fixed effects
 tidy_all_effects <- tibble::tibble(
- parameter = names(all_fixed_marginals),
- data = purrr::map(all_fixed_marginals, ~ as.data.frame(.x))
+ parameter = names(frp_marginals),
+ data = purrr::map(frp_marginals, ~ as.data.frame(.x))
 ) %>%
  unnest(data) %>%
  filter(parameter != "(Intercept)") %>%  # Exclude the intercept
@@ -336,7 +368,6 @@ tidy_all_effects <- tibble::tibble(
   )
  )
 
-# Plot all fixed effects in a single ridge plot, excluding the intercept
 ggplot(tidy_all_effects, aes(x = x, y = effect, height = y, fill = effect)) +
  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
@@ -346,6 +377,12 @@ ggplot(tidy_all_effects, aes(x = x, y = effect, height = y, fill = effect)) +
   fill = "Effect"
  ) +
  theme_minimal()
+
+
+# Tidy up!
+rm(frp_marginals, tidy_marginals, tidy_all_effects, tidy_tpp, tidy_qmd, tidy_combined)
+gc()
+
 
 
 #####################
