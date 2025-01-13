@@ -44,7 +44,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
 
 # calculate the species presence / absence data
 # Define threshold for presence
-dt = 0.05 # 5% of live basal area
+dt = 0.10 # 5% of live BA or TPP
 
 # Calculate presence/absence for each species group
 # Assuming columns like species group contributions: balive_species, tpa_species, etc.
@@ -55,12 +55,12 @@ pres_abs <- grid_tm %>%
   dominance = ifelse(is.na(ba_live_pr) | ba_live_pr < dt, 0, 1),
   abundance = ifelse(is.na(tpp_live_pr) | tpp_live_pr < dt, 0, 1)
  ) %>%
- distinct(grid_index, species_gp_n, dominance, abundance)
+ distinct(grid_index, species_gp_n, abundance)
 # check on the table
 head(pres_abs)
 
 # Pivot the data to wide format for presence based on abundance
-pmat <- pres_abs %>%
+pmat.df <- pres_abs %>%
  select(grid_index, species_gp_n, abundance) %>%
  pivot_wider(
   names_from = species_gp_n, # Species become columns
@@ -69,12 +69,12 @@ pmat <- pres_abs %>%
  ) %>%
  column_to_rownames("grid_index")  # Set grid_id as rownames
 # View the matrix
-print(head(pmat))
+print(head(pmat.df))
 
 
 #=========MODEL FIT=========#
 
-pmat <- as.matrix(pmat)
+pmat <- as.matrix(pmat.df)
 
 # run the co-occurrence model
 coo.model <- cooccur(t(pmat), type = "spp_site", thresh = TRUE, spp_names = TRUE)
@@ -84,7 +84,8 @@ summary(coo.model)  # Overview of results
 plot(coo.model)
 pair.profile(coo.model)
 
-#=========PLOTTING PROBABILITIES=========#
+
+#=========PLOTTING OBSERVED PROBABILITIES=========#
 
 # Extract probabilities of co-occurrence
 probs <- as.data.frame(prob.table(coo.model))
@@ -126,6 +127,89 @@ ggplot(probs, aes(x = sp1, y = sp2, fill = prob_cooccur)) +
  )
 
 
+#=========PLOTTING RELATIONSHIPS=========#
+
+# Classify co-occurrence relationships
+probs_cl <- probs %>%
+ mutate(
+  relationship = case_when(
+   p_lt < 0.05 ~ "negative",
+   p_gt < 0.05 ~ "positive",
+   TRUE ~ "random"
+  )
+ )
+
+# Reorder the species
+spp_order <- unique(c(probs$sp1_name, probs_cl$sp2_name))
+probs_cl <- probs_cl %>%
+ mutate(
+  sp1_name = factor(sp1_name, levels = spp_order),
+  sp2_name = factor(sp2_name, levels = spp_order)
+ )
+
+# Plot using ggplot
+ggplot(probs_cl, aes(x = sp1_name, y = sp2_name, fill = relationship)) +
+ geom_tile(color = "white") +
+ scale_fill_manual(values = c("positive" = "skyblue", 
+                              "negative" = "orange", 
+                              "random" = "grey80"),
+                   name = "Relationship") +
+ labs(
+  x = "Species A",
+  y = "Species B",
+  title = "Species Co-occurrence Matrix"
+ ) +
+ theme_minimal() +
+ theme(
+  axis.text.x = element_text(angle = 45, hjust = 1),
+  panel.grid = element_blank()
+ )
+
+
+#################################################
+# Calculate observed probabilities for pure grids
+# Add a column to mark pure stands in the grid data
+pure_pa <- pmat.df %>%
+ rowwise() %>%
+ mutate(
+  pure = ifelse(sum(c_across(where(is.numeric))) == 1, 1, 0)  # Only one species present
+ ) %>%
+ ungroup()
+head(pure_pa)
+
+n_pure_grids <- sum(pure_pa$pure == 1)
+total_grids <- nrow(pure_pa)
+pure_fraction <- n_pure_grids / total_grids
+
+cat("Number of pure grids:", n_pure_grids, "\n")
+cat("Fraction of pure grids:", pure_fraction, "\n")
+
+# Identify species in pure stands
+pure_species <- colnames(pmat)[colSums(pmat == 1 & pure_pa$pure == 1) > 0]
+
+# Initialize a results table for pure stands
+pure_probs <- tibble(
+ species = pure_species,
+ obs_pure = numeric(length(pure_species)),
+ exp_pure = numeric(length(pure_species)),
+ prob_pure = numeric(length(pure_species))
+)
+# Observed probability: Fraction of grids where the species is pure
+pure_probs <- pure_probs %>%
+ rowwise() %>%
+ mutate(
+  n_grids = sum(pmat.df[[species]] == 1 & pure_pa$pure == 1),  # Count grids where species is pure
+  obs_pure = n_grids / nrow(pmat.df),                         # Fraction of grids where species is pure
+  exp_pure = (sum(pmat.df[[species]]) / nrow(pmat.df))^2,     # Marginal probability squared
+  prob_pure = ifelse(exp_pure > 0, obs_pure / exp_pure, NA)   # Avoid division by zero
+ ) %>%
+ ungroup() %>%
+ mutate(
+  species = paste0(species, ".pure")  # Label species with ".pure"
+ )
+head(pure_probs)
+
+
 #############################################################################
 # Identify the top two most dominant species by grid using abundance
 # Create the species pair factor for each grid or label species:pure
@@ -133,7 +217,7 @@ df <- grid_tm %>%
  select(grid_index, fortypnm_gp, species_gp_n,
         ba_live_pr, tpp_live_pr) %>%
  filter(
-  tpp_live_pr >= 0.05
+  tpp_live_pr >= 0.10
  )
 
 # Identify top two species by live basal area
@@ -160,7 +244,19 @@ top_spps <- df %>%
    mutate(spp_pair = interaction(sp1_name, sp2_name)) %>%
    select(spp_pair, obs_cooccur, prob_cooccur),
   by = "spp_pair"
- )
+ ) %>%
+ left_join(
+  pure_probs %>%
+   rename(spp_pair = species) %>%
+   select(spp_pair, n_grids, prob_pure),  # Include n_grids and prob_pure for pure stands
+  by = "spp_pair"
+ ) %>%
+ mutate(
+  # Use prob_pure and n_grids for pure stands; retain prob_cooccur for mixed stands
+  prob_cooccur = if_else(!is.na(prob_pure), prob_pure, prob_cooccur),
+  obs_cooccur = if_else(!is.na(n_grids), n_grids, obs_cooccur)
+ ) %>%
+ select(-c(prob_pure, n_grids))
 head(top_spps)
 
 # write this file out
