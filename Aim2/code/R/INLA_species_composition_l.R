@@ -29,8 +29,11 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
         year = year(first_obs_date),              # Extract year
         month = month(first_obs_date)) %>%
  # remove missing FRP, prep columns
+ # Ensure daytime FRP and CBIbc is greater than 0
  filter(
-  frp_max_day > 0, # make sure daytime FRP is not 0
+  frp_max_day > 0,
+  CBIbc_p90 > 0,
+  forest_pct >= 0.50 # at least 50% of the grid is forested
  ) %>% 
  # create a numeric fire ID
  mutate(
@@ -144,10 +147,34 @@ spp_coo <- top_spps %>%
  ) %>%
  mutate(
   fr = n / n_grids,
-  wt = 1 / (fr + 1e-6),
-  wt_sc = wt / max(wt)
+  # Apply a smoothed scaling to balance rare/common pairs
+  wt_sc = 1 + log(1 + 10 * fr),  # 1 + log(1 + k * fr); k=scaling factor
+  wt_sc_inv = 1 / wt_sc,  # Optionally invert for comparison
+  wt_sq = sqrt(fr), # square root
+  wt_sq_inv = 1 / wt_sq, # inverse squareroot
+  wt_norm = (wt_sc - min(wt_sc)) / (max(wt_sc) - min(wt_sc))
  )
 head(spp_coo,10)
+
+# check the counts
+spp_coo %>%
+ arrange(n)
+
+# handle extremely rare cases ...
+# these influence the variance too much on the latent effect
+# gather list of rare pairings
+rare_tr <- 0.001  # Threshold for rare species pairs
+rare_pairs <- spp_coo %>%
+ filter(fr < rare_tr) %>%
+ pull(spp_pair)
+rare_pairs
+
+# check the weights distribution
+ggplot(spp_coo, aes(x = fr, y = wt_sc_inv)) +
+ geom_point(color = "blue") +
+ labs(title = "Weight Scaling for Species Pairs", 
+      x = "Fractional Occurrence (fr)", 
+      y = "Scaled Weight (wt_sc)")
 
 # merge the co-occurrence observed to the grid-level spp_pairs
 spp_pairs <- top_spps %>%
@@ -169,9 +196,6 @@ grid_tm <- grid_tm %>%
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
 
-# Check rows where spp_pair is NA
-nrow(grid_tm %>% filter(is.na(spp_pair))) # should be 0
-
 # Check on the grid cell counts for daytime observations
 grid_counts <- grid_tm %>%
  distinct(Fire_ID, grid_index) %>% # keep only distinct rows
@@ -184,12 +208,18 @@ idx <- grid_counts %>%
  filter(n_grids < quantile(grid_counts$n_grids, probs = 0.1)) %>%
  pull(Fire_ID)
 length(idx)
+
 # filter the data frame to remove these fires
+# also remove our rare_species
 grid_tm <- grid_tm %>%
- filter(!Fire_ID %in% idx)
+ filter(!Fire_ID %in% idx,
+        !spp_pair %in% rare_pairs)
+
+# Check rows where spp_pair is NA
+nrow(grid_tm %>% filter(is.na(spp_pair))) # should be 0
 
 # tidy up!
-rm(shannon, grid_counts, aspen_pr, spp_pairs, idx)
+rm(shannon, grid_counts, aspen_pr, spp_pairs, rare_pairs, idx)
 gc()
 
 
@@ -246,7 +276,7 @@ da <- grid_tm %>%
  filter(
   # filter where abundance is >= 5% of grid
   # removes noise from small proportions
-  tpp_live_pr >= 0.05
+  ba_live_pr >= 0.05
  ) %>%
  mutate(
   # center/scale metrics / fixed effects
@@ -272,7 +302,7 @@ da <- grid_tm %>%
   forest_pct, # grid-level forest percent
   erc, erc_dv, vpd, vpd_dv, # climate
   elev, slope, tpi, chili, # topography
-  spp_pair, n, fr, wt, wt_sc # species predominant pair and weights
+  spp_pair, n, fr, wt_sc, wt_sc_inv, wt_sq, wt_sq_inv, wt_norm # species predominant pair and weights
  )
 
 # Check rows where spp_pair is NA
@@ -292,9 +322,9 @@ if (nrow(da %>% filter(is.na(spp_pair))) == 0) {
 
 # setup the model formula
 mf.frp <- log_frp_max_day ~ 1 + 
- fortypnm_gp:H_tpp + # species diversity by predominant forest type
+ fortypnm_gp:H_tpp + # species diversity (abundance) by predominant forest type
  species_gp_n:ba_live_pr + # species proportion of live basal area
- species_gp_n:qmd_live + # species quadratic mean diameter
+ species_gp_n:qmd_live_pr + # species quadratic mean diameter
  forest_pct + # grid-level forest cover
  erc + vpd_dv + elev + slope + tpi + chili # climate + topography
 
@@ -303,7 +333,8 @@ model_tm <- inla(
  mf.frp, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(prec = 0.1)  # Penalize high precision
 )
 summary(model_tm)
 
@@ -312,17 +343,18 @@ summary(model_tm)
 # Add fire-level random effects
 # compare models using WAIC and DIC
 
-# Prior using PC-prec:
-hyper_pc = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
-
-# update the model formula
-mf.frp.re <- update(mf.frp, . ~ 1 + . + f(Fire_ID, model = "iid", hyper = hyper_pc))
+# update the model formula to include the random effect
+mf.frp.re <- update(
+ mf.frp, . ~ 1 + . + 
+  f(Fire_ID, model = "iid", hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1))))
+)
 # fit the model
 model_tm.re <- inla(
  mf.frp.re, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(prec = 0.1)  # Penalize high precision
 )
 summary(model_tm.re)
 
@@ -350,6 +382,8 @@ gc()
 
 ############################################################
 # Compare to model with species co-occurrence latent effects
+# Requires building a precision matrix using species pairs
+# Weighted by the observed co-occurrence frequency
 
 # gather unique species pairs
 spp_pairs <- unique(da$spp_pair)
@@ -359,14 +393,16 @@ n_pairs <- length(spp_pairs)
 prec_mat <- Matrix(0, nrow = n_pairs, ncol = n_pairs, sparse = TRUE)
 rownames(prec_mat) <- spp_pairs
 colnames(prec_mat) <- spp_pairs
-# populate diagonal with weights (inverse of co-occurrence proportion)
+# populate diagonal with weights
+# log-scaled fractional occurrence (wt_sc)
+# appropriate for balancing rare/common pairings
 for (pair in spp_pairs) {
- wt <- mean(da$wt[da$spp_pair == pair])  # Use mean weight for each spp_pair
- prec_mat[pair, pair] <- wt
+ wt_sc <- mean(da$wt_sc[da$spp_pair == pair])  # Use mean weight for each spp_pair
+ prec_mat[pair, pair] <- wt_sc
 }
 # check positive-definiteness
 if (!all(eigen(prec_mat)$values > 0)) {
- diag(prec_mat) <- diag(prec_mat) + 1e-5  # Add a small constant to diagonals
+ diag(prec_mat) <- diag(prec_mat) + 1e-2  # Add a small constant to diagonals
 }
 # ensure symmetry and positive-definiteness
 prec_mat <- Matrix::nearPD(prec_mat, corr = FALSE)$mat
@@ -375,137 +411,50 @@ da$spp_pair <- factor(da$spp_pair, levels = rownames(prec_mat))
 # Verify alignment
 stopifnot(all(levels(da$spp_pair) %in% rownames(prec_mat)))
 stopifnot(all(rownames(prec_mat) %in% levels(da$spp_pair)))
-
-# Check levels of spp_pair in the data
-levels(da$spp_pair)
-
-# Check row and column names of prec_mat
-rownames(prec_mat)
-colnames(prec_mat)
-
-# Ensure they match
-setdiff(levels(da$spp_pair), rownames(prec_mat))  # Should return an empty vector
-setdiff(rownames(prec_mat), levels(da$spp_pair))  # Should also return an empty vector
-
-is.factor(da$spp_pair)  # Should return TRUE
-levels(da$spp_pair) == rownames(prec_mat)  # Should all be TRUE
-anyNA(da$spp_pair)  # Should return FALSE
-
+# Verify positive semi-definiteness
 isSymmetric(prec_mat)  # Should return TRUE
 all(eigen(prec_mat)$values > 0)  # Should return TRUE
-
+# Verify factor dimensions
 nrow(prec_mat) == length(unique(da$spp_pair))  # Should return TRUE
 
-spp_counts <- da %>%
- group_by(spp_pair) %>%
- summarise(n_obs = n()) %>%
- arrange(n_obs)
-print(spp_counts, n=36)
 
-# Check for duplicate grid entries
-n_grids <- length(unique(da$grid_index))
-n_rows <- nrow(da)
-cat("Unique grids:", n_grids, "Total rows:", n_rows, "\n")
-# Confirm one `spp_pair` per grid
-dupes <- da %>%
- group_by(grid_index) %>%
- summarise(n_pairs = n_distinct(spp_pair)) %>%
- filter(n_pairs > 1)
+#######################################################################################
+# update the model formula with a structured latent random effect with 'generic0' model
+# new model formula
+mf.frp.re.sp <- update(
+ mf.frp.re, 
+ . ~ 1 + . + 
+  f(spp_pair, model = "generic0", Cmatrix = prec_mat, 
+    values = levels(da$spp_pair),
+    hyper = list(
+     prec = list(prior = "pc.prec", param = c(1, 0.5))  # Penalizes overly high precision
+    )))
 
-if (nrow(dupes) > 0) {
- print("Duplicate grid indices with multiple species pairs found!")
- print(dupes)
-} else {
- print("No duplicate grid indices.")
-}
-
-# Identify rare pairs
-rare_pairs <- spp_counts %>%
- filter(n_obs < 10) %>%
- pull(spp_pair)
-
-# Filter dataset
-da <- da %>%
- filter(!spp_pair %in% rare_pairs)
-
-# Update precision matrix
-prec_mat <- prec_mat[!rownames(prec_mat) %in% rare_pairs, !colnames(prec_mat) %in% rare_pairs]
-
-# Drop unused factor levels in spp_pair
-da$spp_pair <- factor(da$spp_pair)
-
-# Check levels to ensure they match the updated precision matrix
-levels(da$spp_pair)
-rownames(prec_mat)
-
-# Verify alignment
-stopifnot(all(levels(da$spp_pair) %in% rownames(prec_mat)))
-stopifnot(all(rownames(prec_mat) %in% levels(da$spp_pair)))
-
-##########################
-# update the model formula
-mf.frp.re.sp <- update(mf.frp.re, . ~ 1 + . + f(spp_pair, model = "generic0", Cmatrix = prec_mat, values = levels(da$spp_pair)))
 # fit the model
 model_tm.re.sp <- inla(
  mf.frp.re.sp, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 0.01)  # Prior for fixed effects
+ control.fixed = list(prec = 0.01)  # Penalize high precision
 )
 summary(model_tm.re.sp)
 
 model_tm.re.sp$waic$waic
 model_tm.re$waic$waic
 
+rm(model_tm.re, prec_mat)
+gc()
 
-#===========POSTERIOR EFFECTS=============#
-
-
-######################################################
-# Plotting fixed effects for species structure metrics
-# Extract fixed effect marginals
-frp_marginals <- model_tm.re.sp$marginals.fixed
-# Tidy up marginals for key predictors
-tidy_marginals <- function(marginals, predictor) {
- tibble::tibble(
-  parameter = names(marginals),
-  data = purrr::map(marginals, ~ as.data.frame(.x))
- ) %>%
-  unnest(data) %>%
-  filter(str_detect(parameter, predictor))
-}
-# Tidy up species-specific effects
-tidy_tpp <- tidy_marginals(frp_marginals, "ba_live_pr")
-tidy_qmd <- tidy_marginals(frp_marginals, "qmd_live")
-# Combine and add species labels
-tidy_combined <- bind_rows(
- tidy_tpp %>% mutate(effect = "ba_live_pr"),
- tidy_qmd %>% mutate(effect = "qmd_live")
-) %>%
- # Add species or forest type names
- mutate(
-  species = case_when(
-   str_detect(parameter, "species_gp_n") ~ str_extract(parameter, "species_gp_n\\w+"),
-  )
- )
-
-# Plot the ridge plot
-ggplot(tidy_combined, aes(x = x, y = effect, height = y, fill = species)) +
- geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
- geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
- labs(
-  x = "Effect Size",
-  y = "Fixed Effect",
-  fill = "Species"
- ) +
- theme_minimal()
+#===========POSTERIOR EFFECTS===========#
 
 
 #########################################
 # Plot all of the posterior fixed effects
+# Extract fixed effect marginals
+frp_marginals <- model_tm.re.sp$marginals.fixed
 # Tidy marginals for all fixed effects
-tidy_all_effects <- tibble::tibble(
+tidy.effects <- tibble::tibble(
  parameter = names(frp_marginals),
  data = purrr::map(frp_marginals, ~ as.data.frame(.x))
 ) %>%
@@ -513,25 +462,78 @@ tidy_all_effects <- tibble::tibble(
  filter(parameter != "(Intercept)") %>%  # Exclude the intercept
  mutate(
   effect = case_when(
-   str_detect(parameter, "ba_live_pr") ~ "BA",
-   str_detect(parameter, "qmd_live") ~ "QMD",
-   str_detect(parameter, "H_tpp") ~ "H",
+   str_detect(parameter, "ba_live_pr") ~ "Prop. Live BA",
+   str_detect(parameter, "qmd_live") ~ "Mean. Live QMD",
+   str_detect(parameter, "H_tpp") ~ "H (TPP)",
    str_detect(parameter, "forest_pct") ~ "Forest %",
    TRUE ~ parameter  # Default for all other fixed effects
+  ),
+  # Extract species names from parameters
+  species = case_when(
+   str_detect(parameter, "species_gp_n") ~ str_extract(parameter, "(?<=species_gp_n)[a-zA-Z_ñ]+"),
+   str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
+   TRUE ~ NA_character_  # For non-species effects
   )
+ ) %>%
+ # Calculate mean effect size for ordering
+ group_by(effect) %>%
+ mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
+ ungroup() 
+
+tidy.effects <- tidy.effects %>%
+ # Order effects: Species-specific effects first, global effects by mean effect size
+ mutate(
+  effect_order = case_when(
+   !is.na(species) ~ 2,  # Species-specific effects
+   TRUE ~ 2              # Global effects
+  ),
+  effect = factor(effect, levels = tidy.effects %>%
+                   arrange(effect_order, desc(mean_effect)) %>%
+                   pull(effect) %>%
+                   unique()),
+  fill_species = ifelse(is.na(species), "Global Effect", species)
  )
 
-ggplot(tidy_all_effects, aes(x = x, y = effect, height = y)) +
+# check on the species name extraction
+unique(tidy.effects$species)
+
+# create the ridge plot
+ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
   x = "Effect Size",
   y = "Fixed Effect",
+  fill = "Species"
  ) +
- theme_minimal()
+ scale_fill_manual(
+  values = c(
+   "Global Effect" = "gray",  # Neutral color for global effects
+   "aspen" = "#1b9e77",
+   "lodgepole" = "#d95f02",
+   "mixed_conifer" = "#7570b3",
+   "piñon_juniper" = "#e7298a",
+   "ponderosa" = "#66a61e",
+   "spruce_fir" = "#e6ab02"
+  ),
+  # Exclude "Global Effect" from the legend
+  breaks = c("aspen", "lodgepole", "mixed_conifer", "piñon_juniper", "ponderosa", "spruce_fir"),  
+  guide = guide_legend(title = "Species")
+ ) +
+ theme_minimal() +
+ theme(
+  legend.title = element_text(size = 10),
+  legend.text = element_text(size = 8),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 12)
+ )
+
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_Spp_COO_FixedEffects.png')
+ggsave(out_png, dpi = 500, bg = 'white')
 
 # Tidy up!
-rm(frp_marginals, tidy_marginals, tidy_all_effects, tidy_tpp, tidy_qmd, tidy_combined)
+rm(frp_marginals, tidy.effects)
 gc()
 
 
@@ -558,11 +560,7 @@ spp_pair_effects <- spp_pair_effects %>%
  ) %>%
  arrange(mean) %>%
  filter(significant) %>% # keep significant pairs
- left_join(pair_lookup, by="spp_pair_id")
-
-# create the plot
-# Order species pair names by effect size
-spp_pair_effects <- spp_pair_effects %>%
+ left_join(pair_lookup, by="spp_pair_id") %>%
  mutate(spp_pair_name = factor(spp_pair_name, levels = spp_pair_name[order(mean)]))
 
 # Create the plot
@@ -575,11 +573,10 @@ ggplot(spp_pair_effects, aes(x = mean, y = spp_pair_name, fill = mean > 0)) +
  ) +
  geom_point(aes(x = mean), color = "black", size = 2) +
  geom_errorbarh(aes(xmin = `0.025quant`, xmax = `0.975quant`), height = 0.2, color = "black") +
- scale_fill_manual(values = c("TRUE" = "skyblue", "FALSE" = "coral"), guide = "none") +
+ scale_fill_manual(values = c("TRUE" = "coral", "FALSE" = "skyblue"), guide = "none") +
  labs(
   x = "Effect Size (Mean ± 95% CI)",
   y = "Species Pair",
-  title = "Significant Effects of Species Co-occurrence (spp_pair)"
  ) +
  theme_minimal() +
  theme(
@@ -589,9 +586,12 @@ ggplot(spp_pair_effects, aes(x = mean, y = spp_pair_name, fill = mean > 0)) +
   axis.title = element_text(size = 12)
  )
 
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_Spp_COO_LatentEffects.png')
+ggsave(out_png, dpi = 500, bg = 'white')
 
-
-
+rm(spp_pair_effects, pair_lookup)
+gc()
 
 
 
@@ -599,26 +599,162 @@ ggplot(spp_pair_effects, aes(x = mean, y = spp_pair_name, fill = mean > 0)) +
 #####################
 # Fit a model for CBI
 # define a new model formula
-mf.cbi <- CBIbc_p90 ~ 1 + 
- fortypnm_gp:H_tpp + # species diversity by predominant forest type
- species_gp_n:ba_live_pr + # species TPP proportion
- species_gp_n:qmd_live + # species QMD
- forest_pct + # proportion of basal area that is aspen
- erc + vpd_dv + elev + slope + tpi + chili + # climate + topography
- f(Fire_ID, model = "iid", hyper = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.1))  # P(std.dev > 1) = 0.1
- ))
+mf.cbi.re.sp <- update(mf.frp.re.sp, CBIbc_p90 ~ 1 + .)
 
 # fit the model
 model_tm.cbi.re <- inla(
- mf.cbi, data = da,
+ mf.cbi.re.sp, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(prec = 0.01)  # Penalize high precision
 )
 summary(model_tm.cbi.re)
 
 
+#########################################
+# Plot all of the posterior fixed effects
+# Extract fixed effect marginals
+cbi_marginals <- model_tm.cbi.re$marginals.fixed
+# Tidy marginals for all fixed effects
+tidy.effects <- tibble::tibble(
+ parameter = names(cbi_marginals),
+ data = purrr::map(cbi_marginals, ~ as.data.frame(.x))
+) %>%
+ unnest(data) %>%
+ filter(parameter != "(Intercept)") %>%  # Exclude the intercept
+ mutate(
+  effect = case_when(
+   str_detect(parameter, "ba_live_pr") ~ "Prop. Live BA",
+   str_detect(parameter, "qmd_live") ~ "Mean. Live QMD",
+   str_detect(parameter, "H_tpp") ~ "H (TPP)",
+   str_detect(parameter, "forest_pct") ~ "Forest %",
+   TRUE ~ parameter  # Default for all other fixed effects
+  ),
+  # Extract species names from parameters
+  species = case_when(
+   str_detect(parameter, "species_gp_n") ~ str_extract(parameter, "(?<=species_gp_n)[a-zA-Z_ñ]+"),
+   str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
+   TRUE ~ NA_character_  # For non-species effects
+  )
+ ) %>%
+ # Calculate mean effect size for ordering
+ group_by(effect) %>%
+ mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
+ ungroup() 
+
+tidy.effects <- tidy.effects %>%
+ # Order effects: Species-specific effects first, global effects by mean effect size
+ mutate(
+  effect_order = case_when(
+   !is.na(species) ~ 2,  # Species-specific effects
+   TRUE ~ 2              # Global effects
+  ),
+  effect = factor(effect, levels = tidy.effects %>%
+                   arrange(effect_order, desc(mean_effect)) %>%
+                   pull(effect) %>%
+                   unique()),
+  fill_species = ifelse(is.na(species), "Global Effect", species)
+ )
+
+# check on the species name extraction
+unique(tidy.effects$species)
+
+# create the ridge plot
+ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect Size",
+  y = "Fixed Effect",
+  fill = "Species"
+ ) +
+ scale_fill_manual(
+  values = c(
+   "Global Effect" = "gray",  # Neutral color for global effects
+   "aspen" = "#1b9e77",
+   "lodgepole" = "#d95f02",
+   "mixed_conifer" = "#7570b3",
+   "piñon_juniper" = "#e7298a",
+   "ponderosa" = "#66a61e",
+   "spruce_fir" = "#e6ab02"
+  ),
+  # Exclude "Global Effect" from the legend
+  breaks = c("aspen", "lodgepole", "mixed_conifer", "piñon_juniper", "ponderosa", "spruce_fir"),  
+  guide = guide_legend(title = "Species")
+ ) +
+ theme_minimal() +
+ theme(
+  legend.title = element_text(size = 10),
+  legend.text = element_text(size = 8),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 12)
+ )
+
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_Spp_COO_FixedEffects-CBI.png')
+ggsave(out_png, dpi = 500, bg = 'white')
+
+# Tidy up!
+rm(cbi_marginals, tidy.effects)
+gc()
+
+
+#########################################################
+# Extract posterior summaries for spp_pair latent effects
+
+# create a lookup table for the species pair names
+pair_lookup <- data.frame(
+ spp_pair_id = seq_along(levels(da$spp_pair)),  # Numeric indices
+ spp_pair_name = levels(da$spp_pair)  # Original species pair names
+)
+
+# Extract the posterior distribution of effects
+spp_pair_effects <- as.data.frame(model_tm.cbi.re$summary.random$spp_pair)
+spp_pair_effects$spp_pair_id <- as.numeric(rownames(spp_pair_effects))
+
+# Add confidence intervals and significance
+spp_pair_effects <- spp_pair_effects %>%
+ mutate(
+  lower_ci = `0.025quant`,
+  upper_ci = `0.975quant`,
+  significant = (lower_ci > 0 | upper_ci < 0),  # Significant if CI does not overlap 0
+  spp_pair = rownames(spp_pair_effects)  # Extract spp_pair names
+ ) %>%
+ arrange(mean) %>%
+ filter(significant) %>% # keep significant pairs
+ left_join(pair_lookup, by="spp_pair_id") %>%
+ mutate(spp_pair_name = factor(spp_pair_name, levels = spp_pair_name[order(mean)]))
+
+# Create the plot
+ggplot(spp_pair_effects, aes(x = mean, y = spp_pair_name, fill = mean > 0)) +
+ geom_col(
+  aes(x = mean), 
+  position = "identity",
+  width = 0.8,
+  alpha = 0.7
+ ) +
+ geom_point(aes(x = mean), color = "black", size = 2) +
+ geom_errorbarh(aes(xmin = `0.025quant`, xmax = `0.975quant`), height = 0.2, color = "black") +
+ scale_fill_manual(values = c("TRUE" = "coral", "FALSE" = "skyblue"), guide = "none") +
+ labs(
+  x = "Effect Size (Mean ± 95% CI)",
+  y = "Species Pair",
+ ) +
+ theme_minimal() +
+ theme(
+  legend.position = "none",
+  axis.text.y = element_text(size = 8),
+  axis.text.x = element_text(size = 10),
+  axis.title = element_text(size = 12)
+ )
+
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_Spp_COO_LatentEffects-CBI.png')
+ggsave(out_png, dpi = 500, bg = 'white')
+
+rm(spp_pair_effects, pair_lookup)
+gc()
 
 
 
