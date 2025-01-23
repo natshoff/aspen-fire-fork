@@ -37,14 +37,15 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   spp_int = interaction(fortypnm_gp, species_gp_n)
  ) %>%
  # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
+ distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) %>% # remove duplicates
+ mutate(species_gp_n = str_replace(species_gp_n, " ", "_"))
 
 
 #============PREP THE SPECIES DATA=============#
 
 # calculate the species presence / absence data
 # Define threshold for presence
-dt = 0.10 # 5% of live BA or TPP
+dt = 0.05 # 5% of live BA or TPP
 
 # Calculate presence/absence for each species group
 # Assuming columns like species group contributions: balive_species, tpa_species, etc.
@@ -55,7 +56,8 @@ pres_abs <- grid_tm %>%
   dominance = ifelse(is.na(ba_live_pr) | ba_live_pr < dt, 0, 1),
   abundance = ifelse(is.na(tpp_live_pr) | tpp_live_pr < dt, 0, 1)
  ) %>%
- distinct(grid_index, species_gp_n, abundance)
+ distinct(grid_index, species_gp_n, abundance) %>%
+ mutate(species_gp_n = str_replace(species_gp_n, " ", "_"))
 # check on the table
 head(pres_abs)
 
@@ -92,8 +94,7 @@ probs <- as.data.frame(prob.table(coo.model))
 head(probs)
 
 # map numeric code to species name
-spps <- c("aspen", "lodgepole", "mixed_conifer", "piñon_juniper", "ponderosa", "spruce_fir")
-
+spps <- colnames(pmat.df)
 # Create a lookup table
 species_lookup <- data.frame(
  id = 1:length(spps),  # Numeric IDs

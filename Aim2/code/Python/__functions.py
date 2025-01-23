@@ -18,6 +18,8 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.colors import to_rgba
 
+from itertools import combinations
+from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from shapely.geometry import box
@@ -370,3 +372,50 @@ def monitor_export(task, timeout=30):
         print(f"Export failed! Bummer. Reason: {status.get('error_message', 'Unknown error')}")
     else:
         print(f"Export ended with state: {status['state']}")
+
+
+def get_spp_coo(df, spps_list, grid_col='grid_index', sp_col='fortypnm_gp'):
+    """
+    Analyzes species co-occurrence within grid cells.
+
+    Parameters:
+        df (pd.DataFrame): Input DataFrame containing species and grid information.
+        spps_list (list): List of species to filter and analyze.
+        grid_col (str): Column name representing the spatial unit (default: 'grid_index').
+        sp_col (str): Column name representing the species (default: 'fortypnm_gp').
+
+    Returns:
+        pd.DataFrame: DataFrame with co-occurrence counts and percentages.
+    """
+
+    # Filter the DataFrame to only include relevant species
+    df_ = df[df[sp_col].isin(spps_list)]
+    print(f"\nSpecies occurrence counts:\n{df_[sp_col].value_counts()}\n")
+
+    # Group species by grid unit and get unique lowercase species per grid
+    spp_grid = (
+        df_.groupby(grid_col)[sp_col]
+        .apply(lambda x: list(x.str.lower().unique()))
+        .reset_index()
+    )
+
+    # Generate all pairwise species combinations per grid cell
+    pairs = spp_grid[sp_col].apply(
+        lambda species_list: list(combinations(species_list, 2))
+    )
+    # Flatten the list of all pairs
+    all_pairs = [pair for sublist in pairs for pair in sublist]
+    # Count co-occurrences of each species pair
+    pair_counts = (
+        pd.DataFrame(Counter(all_pairs).items(), columns=['species_pair', 'coo_count'])
+        .sort_values(by='coo_count', ascending=False)
+    )
+
+    # Calculate co-occurrence percentage
+    pair_counts['coo_pct'] = pair_counts['coo_count'] / len(spp_grid) * 100
+
+    # Clean up memory
+    del spp_grid, df_, pairs
+    gc.collect()
+
+    return pair_counts

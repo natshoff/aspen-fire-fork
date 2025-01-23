@@ -32,8 +32,6 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  # Ensure daytime FRP and CBIbc is greater than 0
  filter(
   frp_max_day > 0,
-  CBIbc_p90 > 0,
-  forest_pct >= 0.50 # at least 50% of the grid is forested
  ) %>% 
  # create a numeric fire ID
  mutate(
@@ -43,8 +41,10 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   # Format species names consistently
   fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
   fortypnm_gp = str_to_lower(fortypnm_gp),
+  fortypnm_gp = str_replace(fortypnm_gp, " ", "_"),
   species_gp_n = str_replace_all(species_gp_n, "-", "_"),
   species_gp_n = str_to_lower(species_gp_n),
+  species_gp_n = str_replace(species_gp_n, " ", "_"),
   # make sure factor variables are set for species names
   fortypnm_gp = as.factor(fortypnm_gp),
   species_gp_n = as.factor(species_gp_n),
@@ -71,6 +71,24 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   # interaction term between forest type and species co-occurring
   spp_int = interaction(fortypnm_gp, species_gp_n)
  ) %>%
+ # keep only species with at least 1% of BA or 5% of TPP
+ filter(
+  # filter where abundance is >= 5% or dominance >= 1%
+  # removes noise from small proportions
+  ba_live_pr > 0.01 | tpp_ld_pr >= 0.05
+ ) %>%
+ # Group by grid and sum dead BA and TPP separately
+ group_by(grid_index) %>%
+ mutate(
+  total_tpp_live = sum(tpp_live, na.rm = TRUE),
+  total_ba_live = sum(ba_live, na.rm = TRUE),
+  total_tpp_dead = sum(tpp_dead_pr, na.rm = TRUE),
+  total_ba_dead = sum(ba_dead_pr, na.rm = TRUE),
+  mean_qmd_live = mean(qmd_live, na.rm = TRUE),
+  mean_qmd_dead = mean(qmd_dead, na.rm = TRUE),
+  mean_tree_ht_l = mean(tree_ht_live, na.rm = TRUE)
+ ) %>%
+ ungroup() %>%
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
 
@@ -100,16 +118,15 @@ shannon <- grid_tm %>%
 aspen_pr <- grid_tm %>%
  group_by(grid_index) %>%
  summarise(
-  # Total live BA and TPP in the grid
-  total_ba_live = sum(ba_live, na.rm = TRUE),
-  total_tpp_live = sum(tpp_live, na.rm = TRUE),
   # Aspen-specific live BA and TPP
   aspen_ba_live = sum(ba_live[species_gp_n == "aspen"], na.rm = TRUE),
   aspen_tpp_live = sum(tpp_live[species_gp_n == "aspen"], na.rm = TRUE),
   # Calculate proportions (avoid division by zero)
   aspen_ba_pr = if_else(total_ba_live > 0, aspen_ba_live / total_ba_live, 0),
-  aspen_tpp_pr = if_else(total_tpp_live > 0, aspen_tpp_live / total_tpp_live, 0)
+  aspen_tpp_pr = if_else(total_tpp_live > 0, aspen_tpp_live / total_tpp_live, 0),
+  .groups = "drop"
  ) %>%
+ ungroup() %>%
  select(grid_index, aspen_ba_pr, aspen_tpp_pr) 
 
 
@@ -120,7 +137,7 @@ aspen_pr <- grid_tm %>%
 top_spps <- grid_tm %>%
  mutate(species_gp_n = as.character(species_gp_n)) %>%
  group_by(grid_index) %>%
- arrange(desc(tpp_live_pr)) %>% # Sort by abundance or dominance
+ arrange(desc(ba_live_pr)) %>% # Sort by abundance or dominance
  slice_head(n = 2) %>% # select the top 2 species
  summarise(
   spp_1 = first(species_gp_n),         # Most dominant species
@@ -154,7 +171,7 @@ spp_coo <- top_spps %>%
   wt_sq_inv = 1 / wt_sq, # inverse squareroot
   wt_norm = (wt_sc - min(wt_sc)) / (max(wt_sc) - min(wt_sc))
  )
-head(spp_coo,10)
+head(spp_coo,15)
 
 # check the counts
 spp_coo %>%
@@ -163,7 +180,7 @@ spp_coo %>%
 # handle extremely rare cases ...
 # these influence the variance too much on the latent effect
 # gather list of rare pairings
-rare_tr <- 0.001  # Threshold for rare species pairs
+rare_tr <- 0.002  # Threshold for rare species pairs
 rare_pairs <- spp_coo %>%
  filter(fr < rare_tr) %>%
  pull(spp_pair)
@@ -223,6 +240,13 @@ rm(shannon, grid_counts, aspen_pr, spp_pairs, rare_pairs, idx)
 gc()
 
 
+# get the species counts
+grid_tm %>% 
+ group_by(species_gp_n) %>%
+ summarise(n = length(species_gp_n))
+
+
+
 #==========EXPLORE THE DATA==========#
 
 ######################################
@@ -230,10 +254,12 @@ gc()
 # Select only numeric columns
 cor_da <- grid_tm %>%
  select(
-  tpp_live_pr, ba_live_pr, qmd_live_pr, # proportion live metrics
-  ba_dead_pr, tpp_dead_pr, qmd_dead_pr, # proportion dead metrics
+  tpp_live_pr, ba_live_pr, qmd_live_pr, # species-level proportion live metrics
   aspen_ba_pr, aspen_tpp_pr, forest_pct, # grid-level aspen proportion and forest percent
-  ba_live, tpp_live, qmd_live, tree_ht_live,  # Live forest composition metrics
+  ba_live, tpp_live, qmd_live, tree_ht_live,  # species-level live forest composition metrics
+  total_tpp_live, total_ba_live, mean_qmd_live, # grid-level live biomass
+  total_ba_dead, total_tpp_dead, mean_qmd_dead, # grid-level dead biomass
+  mean_tree_ht_l, # grid-level mean tree height
   H_ba, H_tpp, # species diversity
   erc, erc_dv, vpd, vpd_dv, # climate
   elev, slope, tpi, chili  # topography
@@ -270,20 +296,22 @@ set.seed(456)
 # make sure aspen is first
 levels(grid_tm$species_gp_n)
 
+# get a list of species
+spps <- unique(as.character(grid_tm$species_gp_n))
+spps
+
 # prep the model data frame
 # center and scale fixed effects
 da <- grid_tm %>%
- filter(
-  # filter where abundance is >= 5% of grid
-  # removes noise from small proportions
-  ba_live_pr >= 0.05
- ) %>%
  mutate(
   # center/scale metrics / fixed effects
   across(
    c(ba_live, ba_live_pr, ba_ld, ba_ld_pr, # basal area (dominance)
      tpp_live, tpp_live_pr, tpp_ld, tpp_ld_pr, # tree/pixel (abundance)
      qmd_live, qmd_live_pr, qmd_ld, qmd_ld_pr, # quadratic mean diameter
+     total_ba_live, total_tpp_live, mean_qmd_live, # grid-level live biomass
+     total_ba_dead, total_tpp_dead, mean_qmd_dead, # grid-level dead biomass
+     mean_tree_ht_l, # grid-level mean tree height
      aspen_ba_pr, aspen_tpp_pr, # grid-level aspen proportion
      H_ba, H_tpp, # grid-level diversity metrics
      forest_pct, # grid-level forest percent
@@ -297,6 +325,9 @@ da <- grid_tm %>%
   ba_live, ba_live_pr, ba_ld, ba_ld_pr, # basal area (dominance)
   tpp_live, tpp_live_pr, tpp_ld, tpp_ld_pr, # tree/pixel (abundance)
   qmd_live, qmd_live_pr, qmd_ld, qmd_ld_pr, # quadratic mean diameter
+  total_ba_live, total_tpp_live, mean_qmd_live, # grid-level live biomass
+  total_ba_dead, total_tpp_dead, mean_qmd_dead, # grid-level dead biomass
+  mean_tree_ht_l, # grid-level mean tree height
   aspen_ba_pr, aspen_tpp_pr, # grid-level aspen proportion
   H_ba, H_tpp, # grid-level diversity metrics
   forest_pct, # grid-level forest percent
@@ -304,6 +335,7 @@ da <- grid_tm %>%
   elev, slope, tpi, chili, # topography
   spp_pair, n, fr, wt_sc, wt_sc_inv, wt_sq, wt_sq_inv, wt_norm # species predominant pair and weights
  )
+
 
 # Check rows where spp_pair is NA
 if (nrow(da %>% filter(is.na(spp_pair))) == 0) {
@@ -324,9 +356,9 @@ if (nrow(da %>% filter(is.na(spp_pair))) == 0) {
 mf.frp <- log_frp_max_day ~ 1 + 
  fortypnm_gp:H_tpp + # species diversity (abundance) by predominant forest type
  species_gp_n:ba_live_pr + # species proportion of live basal area
- species_gp_n:qmd_live_pr + # species quadratic mean diameter
+ species_gp_n:qmd_live + # species quadratic mean diameter
  forest_pct + # grid-level forest cover
- erc + vpd_dv + elev + slope + tpi + chili # climate + topography
+ vpd + erc + elev + slope + tpi + chili # climate + topography
 
 # fit the model
 model_tm <- inla(
@@ -440,11 +472,29 @@ model_tm.re.sp <- inla(
 )
 summary(model_tm.re.sp)
 
-model_tm.re.sp$waic$waic
-model_tm.re$waic$waic
 
-rm(model_tm.re, prec_mat)
+########################
+# Compare DIC and WAIC #
+
+cat("Fire-level random effect only: \n")
+cat("\tDIC:", model_tm.re$dic$dic, "\n")
+cat("\tWAIC:", model_tm.re$waic$waic, "\n\n")
+cat("With structured latent effect: \n")
+cat("\tDIC:", model_tm.re.sp$dic$dic, "\n")
+cat("\tWAIC:", model_tm.re.sp$waic$waic, "\n")
+
+# keep the best model
+if (model_tm.re$waic$waic > model_tm.re.sp$waic$waic) {
+ summary(model_tm.re.sp)
+ rm(model_tm.re)
+} else {
+ summary(model_tm.re)
+ rm(model_tm.re.sp)
+}
+
+rm(prec_mat)
 gc()
+
 
 #===========POSTERIOR EFFECTS===========#
 
@@ -463,7 +513,7 @@ tidy.effects <- tibble::tibble(
  mutate(
   effect = case_when(
    str_detect(parameter, "ba_live_pr") ~ "Prop. Live BA",
-   str_detect(parameter, "qmd_live") ~ "Mean. Live QMD",
+   str_detect(parameter, "qmd_live") ~ "Mean Live QMD",
    str_detect(parameter, "H_tpp") ~ "H (TPP)",
    str_detect(parameter, "forest_pct") ~ "Forest %",
    TRUE ~ parameter  # Default for all other fixed effects
@@ -495,7 +545,8 @@ tidy.effects <- tidy.effects %>%
  )
 
 # check on the species name extraction
-unique(tidy.effects$species)
+unique(tidy.effects$fill_species)
+spps_breaks <- unique(tidy.effects$fill_species)
 
 # create the ridge plot
 ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
@@ -509,7 +560,7 @@ ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
  scale_fill_manual(
   values = c(
    "Global Effect" = "gray",  # Neutral color for global effects
-   "aspen" = "#1b9e77",
+   "quaking_aspen" = "#1b9e77",
    "lodgepole" = "#d95f02",
    "mixed_conifer" = "#7570b3",
    "piñon_juniper" = "#e7298a",
@@ -517,7 +568,7 @@ ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
    "spruce_fir" = "#e6ab02"
   ),
   # Exclude "Global Effect" from the legend
-  breaks = c("aspen", "lodgepole", "mixed_conifer", "piñon_juniper", "ponderosa", "spruce_fir"),  
+  breaks = spps_breaks,  
   guide = guide_legend(title = "Species")
  ) +
  theme_minimal() +
