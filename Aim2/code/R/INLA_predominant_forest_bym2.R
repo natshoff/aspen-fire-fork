@@ -623,37 +623,51 @@ ggsave(out_png, plot = p_climate_topo, dpi = 300, bg = 'white')
 
 # Extract spatial random effect estimates
 spatial_effects <- model_bl.frp.sp$summary.random$grid_index %>%
- dplyr::select(ID, mean, sd, '0.025quant', '0.5quant', '0.975quant')
+ dplyr::select(ID, mean, sd, '0.025quant', '0.5quant', '0.975quant') %>%
+ rename(grid_index = ID)
 
 # Join spatial effects back to spatial data
-grid_sf <- grid_sf %>%
- left_join(spatial_effects, by = c("grid_index" = "ID"))
+grid_sf.eff <- grid_sf %>%
+ left_join(spatial_effects, by = "grid_index")
+sum(is.na(grid_sf.eff$mean))  # Count missing values
+
+# check the histogram of spatial effects across fires
+hist(grid_sf.eff$mean, breaks = 50, col = "skyblue")
 
 # Plot the spatial effects (posterior mean)
-ggplot(grid_sf) +
- geom_sf(aes(fill = mean), color = NA) +
- scale_fill_viridis_c(option = "magma", name = "Posterior Mean") +
- labs(title = "Posterior Mean of Spatial Effect") +
+# Use the Williams Fork Fire as an example
+fire_sf <- grid_sf.eff %>% filter(fire_id == 51) %>% st_transform(st_crs(5070))
+ggplot(fire_sf) +
+ geom_sf(aes(color = mean)) +
+ scale_color_viridis_c(option = "magma") +
  theme_minimal()
 
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_WilliamsFork_SpatialEff.png')
+ggsave(out_png, dpi = 300, bg = 'white')
+
+
+###########################################################
 # Extract structured and unstructured components separately
-structured_effects <- model_bl.frp.sp$summary.random$grid_index$mean * model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"]
-unstructured_effects <- model_bl.frp.sp$summary.random$grid_index$mean * (1 - model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"])
-
+n <- nrow(grid_sf.eff)
+st_effects <- model_bl.frp.sp$summary.random$grid_index$mean[1:n] * 
+ model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"]
+un_effects <- model_bl.frp.sp$summary.random$grid_index$mean[1:n] * 
+ (1 - model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"])
 # Add components to spatial data
-grid_sf <- grid_sf %>%
- mutate(structured = structured_effects, unstructured = unstructured_effects)
-
+grid_sf.eff <- grid_sf.eff %>%
+ mutate(structured = st_effects, unstructured = un_effects)
+# Grab our test fire again
+fire_sf <- grid_sf.eff %>% filter(fire_id == 51)
 # Plot structured vs unstructured effects
-p1 <- ggplot(grid_sf) +
- geom_sf(aes(fill = structured), color = NA) +
- scale_fill_viridis_c(name = "Structured Component") +
+p1 <- ggplot(fire_sf) +
+ geom_sf(aes(color = structured), color = NA) +
+ scale_color_viridis_c(name = "Structured Component") +
  labs(title = "Structured Spatial Component") +
  theme_minimal()
-
-p2 <- ggplot(grid_sf) +
- geom_sf(aes(fill = unstructured), color = NA) +
- scale_fill_viridis_c(name = "Unstructured Component") +
+p2 <- ggplot(fire_sf) +
+ geom_sf(aes(color = unstructured), color = NA) +
+ scale_color_viridis_c(name = "Unstructured Component") +
  labs(title = "Unstructured Spatial Component") +
  theme_minimal()
 
@@ -661,165 +675,38 @@ p2 <- ggplot(grid_sf) +
 p1 + p2
 
 
+#==============MODEL DIAGNOSTICS================#
 
-
-
-
-spat.eff.frp <- inla.spde.make.A(mesh, coords_mat) %*% 
- model_bl.frp.re2.sp$summary.random$spatial_field$mean
-spat.eff.cbi <- inla.spde.make.A(mesh, coords_mat) %*% 
- model_bl.cbi$summary.random$spatial_field$mean
-# Add spatial effects to the data frame
-spat.eff.df <- cbind(as.data.frame(coords_mat), spat_eff_frp = as.vector(spat.eff.frp))
-spat.eff.df <- cbind(spat.eff.df, spat_eff_cbi = as.vector(spat.eff.cbi))
-colnames(spat.eff.df) <- c("x", "y", "spat_eff_frp", "spat_eff_cbi")
-
-# Convert to an sf object for mapping
-spat.sf <- st_as_sf(spat.eff.df, coords = c("x", "y"), crs = 4326)  # Adjust CRS if needed
-
-# Plot spatial effects
-# FRP Map
-frp_map <- ggplot(spat.sf) +
- geom_sf(aes(color = spat_eff_frp), size = 2) +
- scale_color_viridis_c(option = "plasma", name = "Spatial Effect (FRP)") +
- theme_minimal() +
- labs(title = "Spatial Random Effects (FRP)", x = "Longitude", y = "Latitude")
-
-# CBI Map
-cbi_map <- ggplot(spat.sf) +
- geom_sf(aes(color = spat_eff_cbi), size = 2) +
- scale_color_viridis_c(option = "plasma", name = "Spatial Effect (CBI)") +
- theme_minimal() +
- labs(title = "Spatial Random Effects (CBI)", x = "Longitude", y = "Latitude")
-
-# Combine maps
-frp_map + cbi_map
-
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_FORTYPNM_SpatialFieldsMap.png')
-ggsave(out_png, dpi=500, bg = 'white')
-
-
-########################################
-# Density plot of spatial random effects
-p.frp <- ggplot(spat.eff.df, aes(x = spat_eff_frp)) +
- geom_density(fill = "blue", alpha = 0.5) +
- geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
- theme_minimal() +
- labs(
-  x = "Spatial Effect",
-  y = "Density"
- )
-
-p.cbi <- ggplot(spat.eff.df, aes(x = spat_eff_cbi)) +
- geom_density(fill = "blue", alpha = 0.5) +
- geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
- theme_minimal() +
- labs(
-  x = "Spatial Effect",
-  y = "Density"
- )
-
-p.frp + p.cbi
-
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_FORTYPNM_SpatialFieldsDistribution.png')
-ggsave(out_png, dpi=500, bg = 'white')
-
-# Tidy up
-rm(spat.eff.frp, spat.eff.cbi, spat.eff.df, spat.sf, p.frp, p.cbi)
-gc()
-
-
-############################################
-# Contributions to explaining model variance
-# Extract variance components for random effects
-
-# Compute variance contributions for FRP
-res.prec <- model_bl.frp.re2.sp$summary.hyperpar["Precision for the Gaussian observations", "mean"]
-res.var <- 1 / res.prec
-grid.prec <- model_bl.frp.re2.sp$summary.hyperpar["Precision for grid_index", "mean"]
-grid.var <- 1 / grid.prec
-fire.prec <- model_bl.frp.re2.sp$summary.hyperpar["Precision for Fire_ID", "mean"]
-fire.var <- ifelse(is.na(fire.prec), 0, 1 / fire.prec) # Handle Fire_ID precision if zero or undefined
-spat.sd <- model_bl.frp.re2.sp$summary.hyperpar["Stdev for spatial_field", "mean"]
-spat.var <- spat.sd^2
-fixed.eff <- model_bl.frp.re2.sp$summary.fitted.values$mean
-fixed.var <- var(fixed.eff, na.rm = TRUE)
-# get the total variance
-total.var <- res.var + fixed.var + grid.var + fire.var + spat.var
-
-# Compute variance contributions for CBI
-res.prec.cbi <- model_bl.cbi$summary.hyperpar["Precision for the Gaussian observations", "mean"]
-res.var.cbi <- 1 / res.prec.cbi
-grid.prec.cbi <- model_bl.cbi$summary.hyperpar["Precision for grid_index", "mean"]
-grid.var.cbi <- 1 / grid.prec.cbi
-fire.prec.cbi <- model_bl.cbi$summary.hyperpar["Precision for Fire_ID", "mean"]
-fire.var.cbi <- ifelse(is.na(fire.prec.cbi), 0, 1 / fire.prec.cbi) # Handle Fire_ID precision if zero or undefined
-spat.sd.cbi <- model_bl.cbi$summary.hyperpar["Stdev for spatial_field", "mean"]
-spat.var.cbi <- spat.sd.cbi^2
-fixed.eff.cbi <- model_bl.cbi$summary.fitted.values$mean
-fixed.var.cbi <- var(fixed.eff.cbi, na.rm = TRUE)
-# Total
-total.var.cbi <- res.var.cbi + fixed.var.cbi + grid.var.cbi + fire.var.cbi + spat.var.cbi
-
-# Combine FRP and CBI variance contributions into a single data frame
-var.contr.full <- bind_rows(
- data.frame(
-  Response = "FRP",
-  Component = c("Residual", "Fixed Effects", "Grid-Level IID", "Fire-Level IID", "Spatial Field"),
-  Variance = c(res.var, fixed.var, grid.var, fire.var, spat.var),
-  Proportion = c(
-   res.var / total.var,
-   fixed.var / total.var,
-   grid.var / total.var,
-   fire.var / total.var,
-   spat.var / total.var
-  )
- ),
- data.frame(
-  Response = "CBI",
-  Component = c("Residual", "Fixed Effects", "Grid-Level IID", "Fire-Level IID", "Spatial Field"),
-  Variance = c(res.var.cbi, fixed.var.cbi, grid.var.cbi, fire.var.cbi, spat.var.cbi),
-  Proportion = c(
-   res.var.cbi / total.var.cbi,
-   fixed.var.cbi / total.var.cbi,
-   grid.var.cbi / total.var.cbi,
-   fire.var.cbi / total.var.cbi,
-   spat.var.cbi / total.var.cbi
-  )
- )
+# Extract fitted values (posterior mean estimates)
+fit_res <- data.frame(
+ Fitted = model_bl.frp.sp$summary.fitted.values$mean,
+ Residuals = da$frp - fitted
 )
+hist(fit_res$Residuals, breaks = 50, col = "skyblue", main = "Histogram of Residuals")
 
-# Plot the variance contributions for both FRP and CBI
-ggplot(var.contr.full, aes(x = Component, y = Proportion, fill = Response)) +
- geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
- scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026")) +
- theme_light() +
- labs(
-  x = "Model Component",
-  y = "Proportion of Variance Explained",
-  fill = "Response"
- )
-
-# Save the plot
-out_png <- paste0(maindir, 'figures/INLA_VarianceContributions_FRP_CBI.png')
-ggsave(out_png, dpi = 500, bg = 'white')
-
-
-###########
-# tidy up !
-rm(frp_marginals, cbi_marginals, tidy_marginals, tidy_frp, tidy_cbi, tidy_combined,
-   climate_topo, cbi_map, frp_map, effect_means, 
-   model_bl.cbi, model_bl.frp, da, effects, res.var, res.prec, grid.var, grid.prec,
-   spat.var, spat.sd, fixed.var, fixed.eff, total.var, var.contr)
-gc() # garbage clean up
+# Create a dataframe for plotting
+comparison_df <- data.frame(
+ type = c(rep("Observed", length(da$frp)), rep("Fitted", length(model_bl.frp.sp$summary.fitted.values$mean))),
+ value = c(da$frp, model_bl.frp.sp$summary.fitted.values$mean)
+)
+ggplot(comparison_df, aes(x = value, color = type, fill = type)) +
+ geom_density(alpha = 0.4) +
+ labs(title = "Density Plot of Observed vs. Fitted Values", 
+      x = "Value", 
+      y = "Density") +
+ scale_fill_manual(values = c("Observed" = "steelblue", "Fitted" = "orange")) +
+ scale_color_manual(values = c("Observed" = "steelblue", "Fitted" = "orange")) +
+ theme_minimal()
 
 
-
-
-
-
+# Plot residuals vs fitted values
+ggplot(fit_res, aes(x = Fitted, y = Residuals)) +
+ geom_point(alpha = 0.5) +
+ geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+ labs(title = "Residuals vs Fitted Values",
+      x = "Fitted Values",
+      y = "Residuals") +
+ theme_minimal()
 
 
 
