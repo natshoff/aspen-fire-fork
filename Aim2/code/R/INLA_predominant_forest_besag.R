@@ -84,7 +84,7 @@ dim(grid_tm %>% filter(forest_pct > 0.50))[1]/dim(grid_tm)[1]
 # distribution of response variables
 grid_tm %>%
  # pivot longer to facet plot
- pivot_longer(cols = c(log_frp_max_day, CBIbc_p90),
+ pivot_longer(cols = c(log_frp_max_day, CBIbc_mean),
               names_to = "variable",
               values_to = "value") %>%
  # Plot with facets
@@ -256,9 +256,12 @@ model_bl.frp <- inla(
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 0.1)  
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.01)) 
+ ) 
 )
 summary(model_bl.frp)
+
 
 
 ##############################################
@@ -277,7 +280,9 @@ model_bl.frp.re <- inla(
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 0.1)  
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.01)) 
+ )   
 )
 summary(model_bl.frp.re)
 
@@ -285,15 +290,17 @@ summary(model_bl.frp.re)
 ###########################################
 # 3. Baseline model + spatial random effect
 
-# spatial points data frame representing grid centroids
+# spatial points representing grid centroids
 da$grid_index <- as.numeric(as.factor(da$grid_index)) # ensure numeric values
 grid_sf <- st_as_sf(da, coords = c("x", "y"), crs = 4326)
 coords <- st_coordinates(grid_sf)
 
-nbs <- knearneigh(coords, k = 3, longlat = T)
-nbs <- knn2nb(nbs, row.names = da$grid_index, sym = T) #force symmetry!!
+# k-nearest neighbor and symmetric matrix
+nbs <- knearneigh(coords, k = 5, longlat = TRUE)
+nbs <- knn2nb(nbs, row.names = da$grid_index, sym = TRUE) #force symmetry!!
 # plot
-plot(st_geometry(grid_sf), col = "grey")
+fire_sf <- grid_sf %>% filter(fire_id == 51)
+plot(st_geometry(fire_sf), col = "grey")
 plot(nbs, coords, add = TRUE, col = "red", lwd = 0.5)
 title("KNN Adjacency Structure")
 
@@ -302,20 +309,14 @@ nb2INLA("cl_graph",nbs)
 am_adj <-paste(getwd(),"/cl_graph",sep="")
 H <- inla.read.graph(filename="cl_graph")
 
+##########################
 # update the model formula
-# define some hyperparameters for the spatial component
-hyper_pr_bym <- list(
- prec.spatial = list(prior = "pc.prec", param = c(1, 0.01)),  # Prior for structured effect
- prec.unstruct = list(prior = "pc.prec", param = c(1, 0.01))  # Prior for unstructured effect
-)
-
 mf.frp.sp <- update(
  mf.frp, . ~ 1 + . + 
   f(grid_index, model = "bym2", graph = H, hyper = list(
-    phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
-    prec = list(prior = "pc.prec", param = c(1, 0.01))  # Overall variance
+    phi = list(prior = "pc", param = c(0.8, 2/3)),  # Proportion of spatial effect
+    prec = list(prior = "pc.prec", param = c(1, 0.1))  # Overall variance
   ))
-  # f(grid_index, model = "bym", constr = TRUE, graph = H, hyper = hyper_pr_bym)
 )
 
 # fit the model
@@ -325,375 +326,100 @@ model_bl.frp.sp <- inla(
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 1)
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.01)) 
+ )  
 )
 
 summary(model_bl.frp.sp)
 
 
 
-
-########################
-# Compare DIC and WAIC #
-
-cat("Model w/ fire+grid+temporal random effects: \n")
-cat("\tDIC:", model_bl.frp$dic$dic, "\n")
-cat("\tWAIC:", model_bl.frp$waic$waic, "\n\n")
-cat("With spatial model: \n")
-cat("\tDIC:", model_bl.frp.sp$dic$dic, "\n")
-cat("\tWAIC:", model_bl.frp.sp$waic$waic, "\n")
-
-# keep the best model
-if (model_bl.frp$waic$waic > model_bl.frp.sp$waic$waic) {
- model_bl.frp <- model_bl.frp.sp
- mf.frp <- mf.frp.sp
- rm(model_bl.frp.sp)
-} else {
- model_bl.frp <- model_bl.frp
- mf.frp <- mf.frp
- rm(model_bl.frp.sp)
-}
-gc()
-
-# print the model summary
-summary(model_bl.frp)
-
-
-################################
-# 3. Adding a fire random effect
-# update the model formula
-mf.frp.re <- update(
- mf.frp, . ~ 1 + . + 
-  f(fire_id, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
-    )
-)
-# fit the model                     
-model_bl.frp.sp.re <- inla(
- mf.frp.re, data = inla.stack.data(stk.frp), 
- family = "gaussian",
- control.predictor = list(A = inla.stack.A(stk.frp), compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 1)
-)
-
-
-# Average Conditional Predictive Ordinate (CPO)
-mean(model_bl.frp.sp.re$cpo$cpo)
-mean(model_bl.frp$cpo$cpo)
-# Log Pseudo Marginal Likelihood (LPML)
-sum(log(model_bl.frp.sp.re$cpo$cpo))
-sum(log(model_bl.frp$cpo$cpo))
-# PIT Distribution Analysis
-qqnorm(model_bl.frp$cpo$pit)
-qqline(model_bl.frp$cpo$pit)
-
-
-# keep the best model
-if (model_bl.frp$waic$waic > model_bl.frp.sp.re$waic$waic) {
- print("Model with fire random effect is better:")
- model_bl.frp <- model_bl.frp.sp.re
- mf.frp <- mf.frp.re
- rm(model_bl.frp.sp.re)
-} else {
- print("Model w/o fire random effect is better:")
- model_bl.frp <- model_bl.frp
- mf.frp <- mf.frp
- rm(model_bl.frp.sp.re)
-}
-gc()
-
-summary(model_bl.frp)
-
-
-####################################
-# Adding a year/season random effect
-# update the model formula
-mf.frp.re2 <- update(
- mf.frp, . ~ 1 + . + 
-  f(fire_year, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
-    )
-)
-# fit the model                     
-model_bl.frp.re2 <- inla(
- mf.frp.re2, data = inla.stack.data(stk.frp), 
- family = "gaussian",
- control.predictor = list(A = inla.stack.A(stk.frp), compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 1)
-)
-
-########################
-# Compare DIC and WAIC #
-# keep the best model
-if (model_bl.frp$waic$waic > model_bl.frp.re2$waic$waic) {
- print("Model with fire+temporal random effects is better.")
- model_bl.frp <- model_bl.frp.re2
- mf.frp <- mf.frp.re2
- rm(model_bl.frp.re2)
-} else {
- print("Model with just fire random effects is better.")
- model_bl.frp <- model_bl.frp
- mf.frp <- mf.frp
- rm(model_bl.frp.re2)
-}
-gc()
-
-summary(model_bl.frp)
-
-
-##########
-# Tidy up!
-rm(A, coords_mat, field.idx, mesh, spde.bl, X, stk.frp)
-gc()
-
-
-################################################################
-# baseline model + fire & temporal random effect + spatial model
-
-
-
-
-
-
-
-
-
-
+#######################################
 #######
 # CBIbc
 
-da <- da %>%
- mutate(CBIbc_p90 = CBIbc_p90 + 1e-6) # add a small amount
+# handle 0s in the data
+da.cbi <- da %>%
+ mutate(cbi = cbi + 1e-6)
 
+#######################################
+# 1. Baseline model (no latent effects)
 
-################
-# baseline model
 # Set up the model formula
-mf.frp <- log_frp_max_day ~ 
+mf.cbi <- cbi ~ 
  fortypnm_gp + # predominant forest type
- erc + vpd + elev + slope + tpi + chili # climate+topography
+ forest_pct + # percent of grid of predominant forest type
+ erc + vpd_dv + # climate
+ slope + tpi + chili # topography
 
 # fit the model                     
-model_bl.frp <- inla(
- mf.frp, data = da, 
- family = "gaussian",
+model_bl.cbi <- inla(
+ mf.cbi, data = da.cbi, 
+ family = "gamma", 
  control.predictor = list(compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
 )
-summary(model_bl.frp)
+summary(model_bl.cbi)
 
 
-#####################################
-# baseline model + fire random effect
+##############################################
+# 2. Baseline model + fire-level random effect
+
 # update the model formula
-mf.frp.re <- update(
- mf.frp, . ~ 1 + . + 
-  f(Fire_ID, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
-  )
+hyper_pr <- list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+mf.cbi.re <- update(
+ mf.cbi, . ~ 1 + . + 
+  f(fire_id, model = "iid", hyper = hyper_pr) # fire-level random effect
 )
 
 # fit the model                     
-model_bl.frp.re <- inla(
- mf.frp.re, data = da, 
- family = "gaussian",
+model_bl.cbi.re <- inla(
+ mf.cbi.re, data = da.cbi, 
+ family = "gamma",
  control.predictor = list(compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
+ )   
 )
-
-########################
-# Compare DIC and WAIC #
-
-cat("Baseline model: \n")
-cat("\tDIC:", model_bl.frp$dic$dic, "\n")
-cat("\tWAIC:", model_bl.frp$waic$waic, "\n\n")
-cat("With fire-level random effect: \n")
-cat("\tDIC:", model_bl.frp.re$dic$dic, "\n")
-cat("\tWAIC:", model_bl.frp.re$waic$waic, "\n")
-
-# keep the best model
-if (model_bl.frp$waic$waic > model_bl.frp.re$waic$waic) {
- model_bl <- model_bl.frp.re
- rm(model_bl.frp, model_bl.frp.re)
-} else {
- model_bl <- model_bl.frp
- rm(model_bl.frp.re, model_bl.frp)
-}
-gc()
+summary(model_bl.cbi.re)
 
 
-##########################################################
-# baseline model + fire random effect + grid random effect
+###########################################
+# 3. Baseline model + spatial random effect
+
+##########################
 # update the model formula
-mf.frp.re2 <- update(
- mf.frp.re, . ~ 1 + . + 
-  f(grid_index, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
-  )
+mf.cbi.sp <- update(
+ mf.cbi, . ~ 1 + . + 
+  f(grid_index, model = "bym2", graph = H, hyper = list(
+    phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
+    prec = list(prior = "pc.prec", param = c(1, 0.1))  # Overall variance
+  ))
 )
 
-# fit the model                     
-model_bl.frp.re2 <- inla(
- mf.frp.re2, data = da, 
+# fit the model
+model_bl.cbi.sp <- inla(
+ mf.cbi.sp, 
+ data = da.cbi, 
  family = "gaussian",
  control.predictor = list(compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
+ )  
 )
 
-########################
-# Compare DIC and WAIC #
-# keep the best model
-if (model_bl$waic$waic > model_bl.frp.re2$waic$waic) {
- print("Model with fire+grid random effects is better.")
- model_bl <- model_bl.frp.re2
- rm(model_bl.frp.re2)
-} else {
- print("Model with just fire random effects is better.")
- model_bl <- model_bl
- rm(model_bl.frp.re2)
-}
+summary(model_bl.cbi.sp)
+
+
+
+# Tidy up !
+rm(coords, fire_sf, grid_sf, H, hyper_pr, model_bl.cbi, 
+   model_bl.cbi.re, model_bl.frp, model_bl.frp.re, nbs)
 gc()
-
-
-###############################################################
-# baseline model + fire random effect + grid random effect
-# + temporal model
-# update the model formula
-mf.frp.re3 <- update(
- mf.frp.re2, . ~ 1 + . + 
-  f(year_season, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
-  )
-)
-
-# fit the model                     
-model_bl.frp.re3 <- inla(
- mf.frp.re3, data = da, 
- family = "gaussian",
- control.predictor = list(compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
-)
-
-########################
-# Compare DIC and WAIC #
-# keep the best model
-if (model_bl$waic$waic > model_bl.frp.re3$waic$waic) {
- print("Model with fire+grid+temporal random effects is better.")
- model_bl <- model_bl.frp.re3
- rm(model_bl.frp.re3)
-} else {
- print("Model with fire+grid random effects is better.")
- model_bl <- model_bl
- rm(model_bl.frp.re3)
-}
-gc()
-
-
-###############################################################
-# baseline model + fire random effect + grid random effect
-# + temporal model + spatial model
-########################################
-# Create the spatial fields model (SPDE)
-
-# arrange by grid_index
-da <- da %>%
- arrange(grid_index)
-
-# Extract coordinates as a matrix
-coords_mat <- as.matrix(select(da, x, y))
-# Create a shared spatial mesh
-mesh <- inla.mesh.2d(
- loc = coords_mat,                    # Locations (grid centroids)
- max.edge = c(10, 30),             # Maximum edge lengths (inner and outer)
- cutoff = 0.1,                      # Minimum distance between points
- offset = c(1, 3)               # Boundary buffer
-)
-plot(mesh)
-points(coords_mat, col = "red", pch = 19, cex = 0.5)
-
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_MeshGrid.png')
-ggsave(out_png, dpi=500, bg = 'white')
-
-# Build the SPDE model
-spde.bl <- inla.spde2.pcmatern(
- # Mesh and smoothness parameter
- mesh = mesh, 
- alpha = 2,
- # P(practic.range < 0.3) = 0.5
- prior.range = c(0.3, 0.5),
- # P(sigma > 1) = 0.01
- prior.sigma = c(10, 0.01)
-)
-
-# Compute the projector matrix (A)
-A <- inla.spde.make.A(
- mesh, # the spatial mesh created above
- loc = coords_mat
-)
-dim(A) # should be equal to # of data locations X number of vertices
-table(rowSums(A > 0)) 
-table(rowSums(A))
-table(colSums(A) > 0) # triangles with no point locations
-
-# Assign the spatial index
-field.idx <- inla.spde.make.index(
- "spatial_field", n.spde=mesh$n
-)
-
-# Create the FRP INLA stack
-# Isolate the predictor variables first
-# Create a data frame for the predictors
-# baseline model includes predominant forest type, climate, and topography
-X <- da[,c(1:2,4,7,10:17)]
-head(X)
-# Create the stack
-stk.frp <- inla.stack(
- data = list(log_frp_max_day = da$log_frp_max_day),
- A = list(A, 1), 
- effects = list(c(field.idx),
-                list(X)),
- tag = 'est')
-dim(inla.stack.A(stk.frp))
-
-# Set up the model formula
-mf.frp.sp <- update(
- mf.frp.re3, . ~ 1 + . + 
-  f(spatial_field, model=spde.bl) # spatial model
-)
-
-# fit the model                     
-model_bl.frp.re3.sp <- inla(
- mf.frp.sp, data = inla.stack.data(stk.frp), 
- family = "gaussian",
- control.predictor = list(A = inla.stack.A(stk.frp), compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
-)
-summary(model_bl.frp.re3.sp)
-
-
-########################
-# Compare DIC and WAIC #
-
-cat("Model w/ fire+grid+temporal random effects: \n")
-cat("\tDIC:", model_bl$dic$dic, "\n")
-cat("\tWAIC:", model_bl$waic$waic, "\n\n")
-cat("With spatial model: \n")
-cat("\tDIC:", model_bl.frp.re3.sp$dic$dic, "\n")
-cat("\tWAIC:", model_bl.frp.re3.sp$waic$waic, "\n")
-
-# keep the best model
-if (model_bl$waic$waic > model_bl.frp.re3.sp$waic$waic) {
- model_bl <- model_bl.frp.re3.sp
- rm(model_bl.frp.re3.sp)
-} else {
- model_bl <- model_bl
- rm(model_bl.frp.re3.sp)
-}
-gc()
-
 
 
 
@@ -703,7 +429,7 @@ gc()
 
 #####
 # FRP
-frp.eff <- as.data.frame(model_bl.frp.re2.sp$summary.fixed) %>%
+frp.eff <- as.data.frame(model_bl.frp.sp$summary.fixed) %>%
  rownames_to_column(var = "parameter") %>%
  filter(grepl("fortypnm_gp", parameter)) %>%
  mutate(
@@ -716,7 +442,7 @@ frp.eff <- as.data.frame(model_bl.frp.re2.sp$summary.fixed) %>%
 
 #####
 # CBI
-cbi.eff <- as.data.frame(model_bl.cbi$summary.fixed) %>%
+cbi.eff <- as.data.frame(model_bl.cbi.sp$summary.fixed) %>%
  rownames_to_column(var = "parameter") %>%
  filter(grepl("fortypnm_gp", parameter)) %>%
  mutate(
@@ -774,6 +500,7 @@ p1 <- ggplot(effects, aes(x = forest_type, y = effect, color = response)) +
   legend.text = element_text(size = 10)
  )
 p1
+
 # save the plot.
 out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects.png')
 ggsave(out_png, dpi=500, bg = 'white')
@@ -782,8 +509,8 @@ ggsave(out_png, dpi=500, bg = 'white')
 ############
 # Ridge plot
 # Extract fixed effect marginals for FRP and CBI
-frp_marginals <- model_bl.frp.re2.sp$marginals.fixed
-cbi_marginals <- model_bl.cbi$marginals.fixed
+frp_marginals <- model_bl.frp.sp$marginals.fixed
+cbi_marginals <- model_bl.cbi.sp$marginals.fixed
 
 # Define a function to tidy marginals
 tidy_marginals <- function(marginals, response) {
@@ -870,8 +597,8 @@ p_climate_topo <- ggplot(climate_topo, aes(x = x, y = parameter, height = y, fil
   fill = "Response"
  ) +
  scale_fill_manual(
-  values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
-  labels = c("FRP" = "Maximum Daytime FRP", "CBI" = "90th Percentile CBIbc")
+  values = c("FRP" = "#FEB24C", "CBIbc" = "#800026"),
+  labels = c("FRP" = "Maximum Daytime FRP", "CBIbc" = "90th Percentile CBIbc")
  ) +
  theme_classic() +
  theme(
@@ -893,6 +620,51 @@ ggsave(out_png, plot = p_climate_topo, dpi = 300, bg = 'white')
 
 ######################################
 # Visualize the spatial random effects
+
+# Extract spatial random effect estimates
+spatial_effects <- model_bl.frp.sp$summary.random$grid_index %>%
+ dplyr::select(ID, mean, sd, '0.025quant', '0.5quant', '0.975quant')
+
+# Join spatial effects back to spatial data
+grid_sf <- grid_sf %>%
+ left_join(spatial_effects, by = c("grid_index" = "ID"))
+
+# Plot the spatial effects (posterior mean)
+ggplot(grid_sf) +
+ geom_sf(aes(fill = mean), color = NA) +
+ scale_fill_viridis_c(option = "magma", name = "Posterior Mean") +
+ labs(title = "Posterior Mean of Spatial Effect") +
+ theme_minimal()
+
+# Extract structured and unstructured components separately
+structured_effects <- model_bl.frp.sp$summary.random$grid_index$mean * model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"]
+unstructured_effects <- model_bl.frp.sp$summary.random$grid_index$mean * (1 - model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"])
+
+# Add components to spatial data
+grid_sf <- grid_sf %>%
+ mutate(structured = structured_effects, unstructured = unstructured_effects)
+
+# Plot structured vs unstructured effects
+p1 <- ggplot(grid_sf) +
+ geom_sf(aes(fill = structured), color = NA) +
+ scale_fill_viridis_c(name = "Structured Component") +
+ labs(title = "Structured Spatial Component") +
+ theme_minimal()
+
+p2 <- ggplot(grid_sf) +
+ geom_sf(aes(fill = unstructured), color = NA) +
+ scale_fill_viridis_c(name = "Unstructured Component") +
+ labs(title = "Unstructured Spatial Component") +
+ theme_minimal()
+
+# Combine the plots
+p1 + p2
+
+
+
+
+
+
 spat.eff.frp <- inla.spde.make.A(mesh, coords_mat) %*% 
  model_bl.frp.re2.sp$summary.random$spatial_field$mean
 spat.eff.cbi <- inla.spde.make.A(mesh, coords_mat) %*% 
