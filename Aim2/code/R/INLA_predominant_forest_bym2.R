@@ -32,17 +32,14 @@ grid_tm <-  read_csv(fp) %>% # read in the file
         grid_idx = paste(Fire_ID, grid_index, sep = "_")) %>%
  # remove missing FRP, prep columns
  filter(
-  frp_max_day > 0, # make sure daytime FRP is not 0
+  frp_max_day > 0, # only work with daytime FRP
  ) %>% 
  # create a numeric fire ID
  mutate(
   # Format species names consistently
-  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
   fortypnm_gp = str_to_lower(fortypnm_gp),
-  fortypnm_gp = str_replace(fortypnm_gp, " ", "_"),
-  species_gp_n = str_replace_all(species_gp_n, "-", "_"),
-  species_gp_n = str_to_lower(species_gp_n),
-  species_gp_n = str_replace(species_gp_n, " ", "_"),
+  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
+  fortypnm_gp = str_replace_all(fortypnm_gp, " ", "_"),
   # make sure factor variables are set for species names
   fortypnm_gp = as.factor(fortypnm_gp),
   species_gp_n = as.factor(species_gp_n),
@@ -84,7 +81,7 @@ dim(grid_tm %>% filter(forest_pct > 0.50))[1]/dim(grid_tm)[1]
 # distribution of response variables
 grid_tm %>%
  # pivot longer to facet plot
- pivot_longer(cols = c(log_frp_max_day, CBIbc_mean),
+ pivot_longer(cols = c(log_frp_max_day, CBIbc_p90),
               names_to = "variable",
               values_to = "value") %>%
  # Plot with facets
@@ -122,7 +119,7 @@ cor_da <- grid_tm %>%
  mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
 
 # Compute correlation matrix
-cor_mat <- cor(cor_da, use = "complete.obs")
+cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
 
 # Plot correlation matrix
 ggcorrplot(
@@ -148,7 +145,8 @@ ggsave(out_png, dpi=500, bg = 'white')
 
 # list of species names
 spps <- c("quaking_aspen", "mixed_conifer", "lodgepole", 
-          "ponderosa", "spruce_fir", "piñon_juniper")
+          "ponderosa", "spruce_fir", "piñon_juniper",
+          "rocky_mountain_juniper", "oak_woodland")
 
 # force aspen to be the baseline
 grid_tm <- grid_tm %>%
@@ -168,8 +166,8 @@ da <- grid_tm %>%
  filter(fortyp_pct > 0.50) %>%
  # select the columns we need for modeling
  select(grid_index, Fire_ID, # ID columns
-        fire_year, year_season, # temporal effects
-        log_frp_max_day, CBIbc_p90, # response variables
+        fire_year, season, year_season, # temporal effects
+        log_frp_max_day, CBIbc_p90, CBIbc_p95, CBIbc_mean, # response variables
         fortypnm_gp, fortyp_pct, forest_pct, # forest type and percent cover
         erc, erc_dv, vpd, vpd_dv, # climate
         elev, slope, tpi, chili, # topography
@@ -190,11 +188,17 @@ da <- grid_tm %>%
  # rename the response variables
  rename(
   frp = log_frp_max_day,
-  cbi = CBIbc_p90,
+  cbi_p90 = CBIbc_p90,
+  cbi_p95 = CBIbc_p95,
+  cbi_mn = CBIbc_mean,
   fire_id = Fire_ID
  ) %>%
+ # remake the grid_index to be unique across fires
+ mutate(
+  grid_index = as.numeric(as.factor(paste0(fire_id,grid_index)))
+ ) %>%
  # keep just one row per grid cell by predominant type
- distinct(grid_index, fire_id, fortypnm_gp, .keep_all = TRUE) %>%
+ distinct(grid_index, fortypnm_gp, .keep_all = TRUE) %>%
  arrange(grid_index)
 glimpse(da)
 
@@ -232,6 +236,18 @@ da %>%
  summarize(n = n()) %>%
  ungroup()
 
+# check on counts by season
+da %>%
+ group_by(season) %>%
+ summarize(n = n()) %>%
+ ungroup()
+
+# Subset species with too few observations
+da.s <- da %>%
+ filter(!fortypnm_gp %in% c("rocky_mountain_juniper","oak_woodland")) %>%
+ mutate(fortypnm_gp = droplevels(fortypnm_gp))
+
+
 
 #===========MODEL FITTING==============#
 
@@ -247,9 +263,9 @@ set.seed(435)
 mf.frp <- frp ~ 
  fortypnm_gp + # predominant forest type
  forest_pct + # percent of grid of predominant forest type
- erc + vpd_dv + # climate
+ erc_dv + # energy release component (ERC)
  slope + tpi + chili # topography
- 
+
 # fit the model                     
 model_bl.frp <- inla(
  mf.frp, data = da, 
@@ -268,7 +284,7 @@ summary(model_bl.frp)
 # 2. Baseline model + fire-level random effect
 
 # update the model formula
-hyper_pr <- list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+hyper_pr <- list(prec = list(prior = "pc.prec", param = c(2, 0.5)))
 mf.frp.re <- update(
  mf.frp, . ~ 1 + . + 
   f(fire_id, model = "iid", hyper = hyper_pr) # fire-level random effect
@@ -309,20 +325,27 @@ nb2INLA("cl_graph",nbs)
 am_adj <-paste(getwd(),"/cl_graph",sep="")
 H <- inla.read.graph(filename="cl_graph")
 
+
 ##########################
 # update the model formula
 mf.frp.sp <- update(
- mf.frp, . ~ 1 + . + 
-  f(grid_index, model = "bym2", graph = H, hyper = list(
-    phi = list(prior = "pc", param = c(0.8, 2/3)),  # Proportion of spatial effect
-    prec = list(prior = "pc.prec", param = c(1, 0.1))  # Overall variance
-  ))
+ mf.frp.re, . ~ 1 + . + 
+  f(grid_index, 
+    model = "bym2", 
+    graph = H, 
+    hyper = list(
+     phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
+     prec = list(prior = "pc.prec", param = c(1, 0.01))  # Overall variance
+    ), 
+    constr = T,
+    scale.model = T
+   )
 )
 
 # fit the model
 model_bl.frp.sp <- inla(
  mf.frp.sp, 
- data = da, 
+ data = da.s, 
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
@@ -340,17 +363,45 @@ summary(model_bl.frp.sp)
 # CBIbc
 
 # handle 0s in the data
-da.cbi <- da %>%
- mutate(cbi = cbi + 1e-6)
+# we looked at these ... many are boundary grids
+da.cbi <- da.s %>%
+ filter(cbi_p90 > 0)
+
+# examine the distributions of CBIbc variables
+da.cbi %>%
+ mutate(log_cbi_mn = log(cbi_mn)) %>%
+ # pivot longer to facet plot
+ pivot_longer(cols = c(cbi_p90, cbi_p95, cbi_mn, log_cbi_mn),
+              names_to = "variable",
+              values_to = "value") %>%
+ # Plot with facets
+ ggplot(aes(x = value)) +
+ geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
+ facet_wrap(
+  ~ variable, 
+  scales = "free",
+  labeller = as_labeller(c(cbi_mn = "Average CBIbc",
+                           log_cbi_mn = "log(Average CBIbc)",
+                           cbi_p90 = "90th Percentile CBIbc",
+                           cbi_p95 = "95th Percentile CBIbc"))) +
+ labs(x = "value",
+      y = "Frequency") +
+ theme_minimal()
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_ResponseDistribution.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+
 
 #######################################
 # 1. Baseline model (no latent effects)
 
 # Set up the model formula
-mf.cbi <- cbi ~ 
+mf.cbi <- cbi_p90 ~ 
  fortypnm_gp + # predominant forest type
  forest_pct + # percent of grid of predominant forest type
- erc + vpd_dv + # climate
+ erc_dv + # energy release component (ERC)
  slope + tpi + chili # topography
 
 # fit the model                     
@@ -394,21 +445,26 @@ summary(model_bl.cbi.re)
 # update the model formula
 mf.cbi.sp <- update(
  mf.cbi, . ~ 1 + . + 
-  f(grid_index, model = "bym2", graph = H, hyper = list(
-    phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
-    prec = list(prior = "pc.prec", param = c(1, 0.1))  # Overall variance
-  ))
+  f(grid_index, 
+    model = "bym2", 
+    graph = H, 
+    hyper = list(
+     phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
+     prec = list(prior = "pc.prec", param = c(1, 0.01))  # Overall variance
+    ), 
+    constr = T
+  )
 )
 
 # fit the model
 model_bl.cbi.sp <- inla(
  mf.cbi.sp, 
  data = da.cbi, 
- family = "gaussian",
+ family = "gamma",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
+  prec = list(prior = "pc.prec", param = c(1, 0.5)) 
  )  
 )
 
@@ -417,7 +473,7 @@ summary(model_bl.cbi.sp)
 
 
 # Tidy up !
-rm(coords, fire_sf, grid_sf, H, hyper_pr, model_bl.cbi, 
+rm(coords, fire_sf, H, hyper_pr, model_bl.cbi, 
    model_bl.cbi.re, model_bl.frp, model_bl.frp.re, nbs)
 gc()
 
