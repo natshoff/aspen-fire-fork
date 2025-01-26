@@ -26,12 +26,15 @@ fp <- paste0(maindir,'data/tabular/mod/gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
 grid_tm <-  read_csv(fp)  %>% # read in the file
  # get the acquisition year and month
  mutate(first_obs_date = as.Date(first_obs_date),  # Convert to Date
-        year = year(first_obs_date),              # Extract year
-        month = month(first_obs_date)) %>%
+        fire_year = year(first_obs_date),              # Extract year
+        month = month(first_obs_date),
+        # create a new unique identifier
+        grid_idx = paste0(Fire_ID, grid_index)) %>%
  # remove missing FRP, prep columns
  # Ensure daytime FRP and CBIbc is greater than 0
  filter(
-  frp_max_day > 0,
+  frp_max_day > 0, # only work with daytime FRP
+  CBIbc_p90 > 0 # and CBI 0 -> these are often boundary grids
  ) %>% 
  # create a numeric fire ID
  mutate(
@@ -39,22 +42,27 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   Fire_ID = as.numeric(as.factor(Fire_ID)),
   grid_index = as.numeric(as.factor(grid_index)),
   # Format species names consistently
-  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
   fortypnm_gp = str_to_lower(fortypnm_gp),
-  fortypnm_gp = str_replace(fortypnm_gp, " ", "_"),
-  species_gp_n = str_replace_all(species_gp_n, "-", "_"),
+  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
+  fortypnm_gp = str_replace_all(fortypnm_gp, " ", "_"),
+  # Format species names consistently
   species_gp_n = str_to_lower(species_gp_n),
-  species_gp_n = str_replace(species_gp_n, " ", "_"),
+  species_gp_n = str_replace_all(species_gp_n, "-", "_"),
+  species_gp_n = str_replace_all(species_gp_n, " ", "_"),
   # make sure factor variables are set for species names
-  fortypnm_gp = as.factor(fortypnm_gp),
-  species_gp_n = as.factor(species_gp_n),
+  fortypnm_gp = factor(fortypnm_gp),
+  species_gp_n = factor(species_gp_n),
+  Fire_ID = factor(Fire_ID),
+  grid_idx = as.numeric(as.factor(grid_idx)),
   # proportion of contributing AFD during daytime observations
   day_prop = day_count / afd_count,
-  # log-scaled outcomes
+  # log-scaled response variables
   log_frp_max = log(frp_max + 1e-5),
   log_frp_csum = log(frp_csum + 1e-5),
   log_frp_max_day = log(frp_max_day + 1e-5),
   log_frp_max_night = log(frp_max_night + 1e-5),
+  log_frp_csum_day = log(frp_csum_day + 1e-5),
+  log_frp_csum_night = log(frp_csum_night + 1e-5),
   # Create a "season" variable based on the month
   season = case_when(
    month %in% c(3, 4, 5) ~ "spring",
@@ -62,20 +70,22 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
    month %in% c(9, 10, 11) ~ "fall"
   ),
   # Year/season interaction
-  year_season = interaction(year, season, drop = TRUE),
+  year_season = interaction(fire_year, season, drop = TRUE),
+  # Factorize the temporal attributes
+  season = factor(season),
+  fire_year = factor(fire_year),
+  year_season = factor(year_season),
   # scale the percentages
   fortyp_pct = fortyp_pct / 100,
   forest_pct = forest_pct / 100,
   # create an aspen presence flag based on abundance
   aspen_flag = if_else(species_gp_n == "aspen" & tpp_live > 0, 1, 0),
-  # interaction term between forest type and species co-occurring
-  spp_int = interaction(fortypnm_gp, species_gp_n)
  ) %>%
- # keep only species with at least 1% of BA or 5% of TPP
+ # filter noise in species data
  filter(
-  # filter where abundance is >= 5% or dominance >= 1%
+  # filter where dominance is >= 5% or abundance >= 10%
   # removes noise from small proportions
-  ba_live_pr > 0.01 | tpp_ld_pr >= 0.05
+  ba_live_pr >= 0.05 | tpp_ld_pr >= 0.1
  ) %>%
  # Group by grid and sum dead BA and TPP separately
  group_by(grid_index) %>%
@@ -90,7 +100,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  ) %>%
  ungroup() %>%
  # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
+ distinct(grid_idx, species_gp_n, .keep_all = TRUE) # remove duplicates
 
 
 ###########################################
@@ -98,7 +108,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
 # use both BA and TPP to calculate H
 # also calculate an aspen presence column
 shannon <- grid_tm %>%
- group_by(grid_index) %>%
+ group_by(grid_idx) %>%
  mutate(
   # Replace 0 or NA proportions with a small value to avoid log issues
   ba_live_pr = ifelse(is.na(ba_live_pr) | ba_live_pr == 0, 1e-6, ba_live_pr),
@@ -116,18 +126,16 @@ shannon <- grid_tm %>%
 #####################################
 # get the grid-level aspen proportion
 aspen_pr <- grid_tm %>%
- group_by(grid_index) %>%
- summarise(
+ group_by(grid_idx) %>%
+ reframe(
   # Aspen-specific live BA and TPP
   aspen_ba_live = sum(ba_live[species_gp_n == "aspen"], na.rm = TRUE),
   aspen_tpp_live = sum(tpp_live[species_gp_n == "aspen"], na.rm = TRUE),
   # Calculate proportions (avoid division by zero)
   aspen_ba_pr = if_else(total_ba_live > 0, aspen_ba_live / total_ba_live, 0),
-  aspen_tpp_pr = if_else(total_tpp_live > 0, aspen_tpp_live / total_tpp_live, 0),
-  .groups = "drop"
+  aspen_tpp_pr = if_else(total_tpp_live > 0, aspen_tpp_live / total_tpp_live, 0)
  ) %>%
- ungroup() %>%
- select(grid_index, aspen_ba_pr, aspen_tpp_pr) 
+ select(grid_idx, aspen_ba_pr, aspen_tpp_pr)
 
 
 ###########################################################
@@ -136,7 +144,7 @@ aspen_pr <- grid_tm %>%
 # the observed co-occurrence distribution...
 top_spps <- grid_tm %>%
  mutate(species_gp_n = as.character(species_gp_n)) %>%
- group_by(grid_index) %>%
+ group_by(grid_idx) %>%
  arrange(desc(ba_live_pr)) %>% # Sort by abundance or dominance
  slice_head(n = 2) %>% # select the top 2 species
  summarise(
@@ -155,7 +163,7 @@ top_spps <- grid_tm %>%
 head(top_spps)
 
 # Summarize unique spp pairs
-n_grids <- length(unique(grid_tm$grid_index))
+n_grids <- length(unique(grid_tm$grid_idx))
 spp_coo <- top_spps %>%
  group_by(spp_pair) %>%
  summarize(
@@ -168,7 +176,7 @@ spp_coo <- top_spps %>%
   wt_sc = 1 + log(1 + 10 * fr),  # 1 + log(1 + k * fr); k=scaling factor
   wt_sc_inv = 1 / wt_sc,  # Optionally invert for comparison
   wt_sq = sqrt(fr), # square root
-  wt_sq_inv = 1 / wt_sq, # inverse squareroot
+  wt_sq_inv = 1 / wt_sq, # inverse square root
   wt_norm = (wt_sc - min(wt_sc)) / (max(wt_sc) - min(wt_sc))
  )
 head(spp_coo,15)
@@ -180,7 +188,7 @@ spp_coo %>%
 # handle extremely rare cases ...
 # these influence the variance too much on the latent effect
 # gather list of rare pairings
-rare_tr <- 0.002  # Threshold for rare species pairs
+rare_tr <- 0.01  # Threshold for rare species pairs (1% of grids)
 rare_pairs <- spp_coo %>%
  filter(fr < rare_tr) %>%
  pull(spp_pair)
@@ -206,23 +214,24 @@ gc()
 ########################################
 # merge attributes back to the grid data
 grid_tm <- grid_tm %>%
- left_join(shannon, by="grid_index") %>%
- left_join(aspen_pr, by = "grid_index") %>%
- left_join(spp_pairs, by = "grid_index") %>%
+ left_join(shannon, by="grid_idx") %>%
+ left_join(aspen_pr, by = "grid_idx") %>%
+ left_join(spp_pairs, by = "grid_idx") %>%
  # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_index, Fire_ID, species_gp_n, .keep_all = TRUE) # remove duplicates
+ distinct(grid_idx, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
 
 # Check on the grid cell counts for daytime observations
 grid_counts <- grid_tm %>%
- distinct(Fire_ID, grid_index) %>% # keep only distinct rows
+ distinct(Fire_ID, grid_idx) %>% # keep only distinct rows
  group_by(Fire_ID) %>%
  summarise(n_grids = n())
-summary(grid_counts)
+summary(grid_counts$n_grids)
 quantile(grid_counts$n_grids, probs = seq(.1, .9, by = .1))
-# Identify fires with n_grids below the 10th percentile
+
+# Identify fires with n_grids below the 20th percentile
 idx <- grid_counts %>%
- filter(n_grids < quantile(grid_counts$n_grids, probs = 0.1)) %>%
+ filter(n_grids < quantile(grid_counts$n_grids, probs = 0.2)) %>%
  pull(Fire_ID)
 length(idx)
 
@@ -245,6 +254,9 @@ grid_tm %>%
  group_by(species_gp_n) %>%
  summarise(n = length(species_gp_n))
 
+# check how many grids and fires
+length(unique(grid_tm$grid_idx))
+length(unique(grid_tm$Fire_ID))
 
 
 #==========EXPLORE THE DATA==========#
@@ -262,7 +274,10 @@ cor_da <- grid_tm %>%
   mean_tree_ht_l, # grid-level mean tree height
   H_ba, H_tpp, # species diversity
   erc, erc_dv, vpd, vpd_dv, # climate
-  elev, slope, tpi, chili  # topography
+  fm1000, fm1000_dv, rmin, rmin_dv, # climate
+  tmmx, tmmx_dv, vs, vs_dv, #climate
+  elev, slope, tpi, chili,  # topography
+  forest_pct, canopypct_mean, balive_sum # grid-level forest characteristics
  ) %>%
  mutate_if(is.factor, as.numeric)  # Convert factors to numeric (if needed)
 
@@ -284,7 +299,7 @@ rm(cor_da, cor_mat)
 gc()
 
 # save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix.png')
+out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SppComp.png')
 ggsave(out_png, dpi=500, bg = 'white')
 
 
@@ -292,13 +307,22 @@ ggsave(out_png, dpi=500, bg = 'white')
 #===========MODEL SETUP==============#
 
 set.seed(456)
+
+# list of species names
+spps <- c("quaking_aspen", "mixed_conifer", "lodgepole", 
+          "ponderosa", "spruce_fir", "piñon_juniper",
+          "rocky_mountain_juniper", "gambel_oak")
+
+# force aspen to be the baseline
+grid_tm <- grid_tm %>%
+ mutate(
+  species_gp_n = fct_relevel(species_gp_n, spps)
+ )
+
 # check the factor levels
 # make sure aspen is first
 levels(grid_tm$species_gp_n)
 
-# get a list of species
-spps <- unique(as.character(grid_tm$species_gp_n))
-spps
 
 # prep the model data frame
 # center and scale fixed effects
@@ -314,14 +338,17 @@ da <- grid_tm %>%
      mean_tree_ht_l, # grid-level mean tree height
      aspen_ba_pr, aspen_tpp_pr, # grid-level aspen proportion
      H_ba, H_tpp, # grid-level diversity metrics
-     forest_pct, # grid-level forest percent
+     forest_pct, canopypct_mean, balive_sum, # grid-level forest characteristics
      erc, erc_dv, vpd, vpd_dv, # climate
+     fm1000, fm1000_dv, rmin, rmin_dv, # climate
+     tmmx, tmmx_dv, vs, vs_dv, #climate
      elev, slope, tpi, chili, # topography
     ), ~ as.numeric(scale(.))
   )) %>%
  select(
-  fortypnm_gp, species_gp_n, grid_index, Fire_ID,
-  log_frp_max_day, CBIbc_p90, # response variables
+  fortypnm_gp, species_gp_n, grid_idx, grid_index, Fire_ID,
+  log_frp_max_day, log_frp_csum, log_frp_csum_day, # FRP response variables
+  CBIbc_p90, CBIbc_p95, CBIbc_p99, CBIbc_mean, # CBI response variables
   ba_live, ba_live_pr, ba_ld, ba_ld_pr, # basal area (dominance)
   tpp_live, tpp_live_pr, tpp_ld, tpp_ld_pr, # tree/pixel (abundance)
   qmd_live, qmd_live_pr, qmd_ld, qmd_ld_pr, # quadratic mean diameter
@@ -330,11 +357,28 @@ da <- grid_tm %>%
   mean_tree_ht_l, # grid-level mean tree height
   aspen_ba_pr, aspen_tpp_pr, # grid-level aspen proportion
   H_ba, H_tpp, # grid-level diversity metrics
-  forest_pct, # grid-level forest percent
+  forest_pct, canopypct_mean, balive_sum, # grid-level forest characteristics
   erc, erc_dv, vpd, vpd_dv, # climate
+  fm1000, fm1000_dv, rmin, rmin_dv, # climate
+  tmmx, tmmx_dv, vs, vs_dv, #climate
   elev, slope, tpi, chili, # topography
-  spp_pair, n, fr, wt_sc, wt_sc_inv, wt_sq, wt_sq_inv, wt_norm # species predominant pair and weights
- )
+  spp_pair, n, fr, wt_sc, wt_sc_inv, 
+  wt_sq, wt_sq_inv, wt_norm # species predominant pair and weights
+ ) %>%
+ # rename the response variables
+ rename(
+  frp_day = log_frp_max_day,
+  frp_csum = log_frp_csum,
+  frp_csum_day = log_frp_csum_day,
+  cbi_p90 = CBIbc_p90,
+  cbi_p95 = CBIbc_p95,
+  cbi_p99 = CBIbc_p99,
+  cbi_mn = CBIbc_mean,
+  fire_id = Fire_ID
+ ) %>%
+ # keep just one row per grid cell by predominant type
+ distinct(grid_idx, species_gp_n, .keep_all = TRUE) %>%
+ arrange(grid_idx)
 
 
 # Check rows where spp_pair is NA
@@ -353,12 +397,12 @@ if (nrow(da %>% filter(is.na(spp_pair))) == 0) {
 # FRP
 
 # setup the model formula
-mf.frp <- log_frp_max_day ~ 1 + 
+mf.frp <- frp_day ~ 1 + 
  fortypnm_gp:H_tpp + # species diversity (abundance) by predominant forest type
  species_gp_n:ba_live_pr + # species proportion of live basal area
  species_gp_n:qmd_live + # species quadratic mean diameter
- forest_pct + # grid-level forest cover
- vpd + erc + elev + slope + tpi + chili # climate + topography
+ forest_pct * canopypct_mean + # grid-level forest cover
+ erc_dv + slope + tpi + chili # climate + topography
 
 # fit the model
 model_tm <- inla(
@@ -366,7 +410,7 @@ model_tm <- inla(
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 0.1)  # Penalize high precision
+ control.fixed = list(prec = 0.01)  # Penalize high precision
 )
 summary(model_tm)
 
@@ -376,9 +420,14 @@ summary(model_tm)
 # compare models using WAIC and DIC
 
 # update the model formula to include the random effect
+# specify a pc-prior for the random effect
+hyper_pr <- list(
+ prec = list(prior = "pc.prec", param = c(1, 0.1))
+)
+# update the model formula
 mf.frp.re <- update(
  mf.frp, . ~ 1 + . + 
-  f(Fire_ID, model = "iid", hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1))))
+  f(fire_id, model = "iid", hyper = hyper_pr) # fire-level random effect
 )
 # fit the model
 model_tm.re <- inla(
@@ -386,30 +435,9 @@ model_tm.re <- inla(
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 0.1)  # Penalize high precision
+ control.fixed = list(prec = 0.01)  # Penalize high precision
 )
 summary(model_tm.re)
-
-
-########################
-# Compare DIC and WAIC #
-
-cat("Baseline model: \n")
-cat("\tDIC:", model_tm$dic$dic, "\n")
-cat("\tWAIC:", model_tm$waic$waic, "\n\n")
-cat("With fire-level random effect: \n")
-cat("\tDIC:", model_tm.re$dic$dic, "\n")
-cat("\tWAIC:", model_tm.re$waic$waic, "\n")
-
-# keep the best model
-if (model_tm$waic$waic > model_tm.re$waic$waic) {
- summary(model_tm.re)
- rm(model_tm)
-} else {
- summary(model_tm)
- rm(model_tm.re)
-}
-gc()
 
 
 ############################################################
@@ -452,48 +480,66 @@ nrow(prec_mat) == length(unique(da$spp_pair))  # Should return TRUE
 
 #######################################################################################
 # update the model formula with a structured latent random effect with 'generic0' model
-# new model formula
-mf.frp.re.sp <- update(
+
+# set a prior for the structured latent effect
+hyper_pr.spp = list(
+ prec = list(prior = "pc.prec", param = c(1, 0.01))  
+)
+# update model formula
+mf.frp.re.spp <- update(
  mf.frp.re, 
  . ~ 1 + . + 
   f(spp_pair, model = "generic0", Cmatrix = prec_mat, 
-    values = levels(da$spp_pair),
-    hyper = list(
-     prec = list(prior = "pc.prec", param = c(1, 0.5))  # Penalizes overly high precision
-    )))
+    values = levels(da$spp_pair), hyper = hyper_pr.spp
+    )
+ )
 
 # fit the model
-model_tm.re.sp <- inla(
- mf.frp.re.sp, data = da,
+model_tm.re.spp <- inla(
+ mf.frp.re.spp, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(prec = 0.01)  # Penalize high precision
 )
-summary(model_tm.re.sp)
+summary(model_tm.re.spp)
+
+
+########################
+# Add the spatial effect
+
 
 
 ########################
 # Compare DIC and WAIC #
+# Model comparison table
 
-cat("Fire-level random effect only: \n")
-cat("\tDIC:", model_tm.re$dic$dic, "\n")
-cat("\tWAIC:", model_tm.re$waic$waic, "\n\n")
-cat("With structured latent effect: \n")
-cat("\tDIC:", model_tm.re.sp$dic$dic, "\n")
-cat("\tWAIC:", model_tm.re.sp$waic$waic, "\n")
+model_comparison <- tibble(
+ Model = c("Baseline", "Baseline + Fire RE", "Baseline + Fire + Temporal RE"),
+ DIC = c(
+  model_bl.frp$dic$dic,
+  model_bl.frp.re$dic$dic,
+  model_bl.frp.re2$dic$dic
+ ),
+ WAIC = c(
+  model_bl.frp$waic$waic,
+  model_bl.frp.re$waic$waic,
+  model_bl.frp.re2$waic$waic
+ ),
+ Marginal_LogLikelihood = c(
+  model_bl.frp$mlik[1],
+  model_bl.frp.re$mlik[1],
+  model_bl.frp.re2$mlik[1]
+ ),
+ Effective_Params = c(
+  model_bl.frp$dic$p.eff,
+  model_bl.frp.re$dic$p.eff,
+  model_bl.frp.re2$dic$p.eff
+ )
+) %>% arrange(WAIC)
 
-# keep the best model
-if (model_tm.re$waic$waic > model_tm.re.sp$waic$waic) {
- summary(model_tm.re.sp)
- rm(model_tm.re)
-} else {
- summary(model_tm.re)
- rm(model_tm.re.sp)
-}
-
-rm(prec_mat)
-gc()
+# Print the comparison table
+print(model_comparison)
 
 
 #===========POSTERIOR EFFECTS===========#

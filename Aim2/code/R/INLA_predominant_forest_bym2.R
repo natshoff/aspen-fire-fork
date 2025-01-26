@@ -25,14 +25,15 @@ maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/A
 fp <- paste0(maindir,'data/tabular/mod/gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
 grid_tm <-  read_csv(fp) %>% # read in the file
  # get the acquisition year and month
- mutate(first_obs_date = as.Date(first_obs_date),  # Convert to Date
-        fire_year = year(first_obs_date),              # Extract year
-        fire_month = month(first_obs_date),
+ mutate(day_max_frp = as.Date(day_max_frp),  # Convert to Date
+        fire_year = year(day_max_frp),              # Extract year
+        fire_month = month(day_max_frp),
         # create a new unique identifier
-        grid_idx = paste(Fire_ID, grid_index, sep = "_")) %>%
+        grid_idx = paste0(Fire_ID, grid_index)) %>%
  # remove missing FRP, prep columns
  filter(
   frp_max_day > 0, # only work with daytime FRP
+  CBIbc_p90 > 0 # and CBI 0 -> these are often boundary grids
  ) %>% 
  # create a numeric fire ID
  mutate(
@@ -41,8 +42,10 @@ grid_tm <-  read_csv(fp) %>% # read in the file
   fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
   fortypnm_gp = str_replace_all(fortypnm_gp, " ", "_"),
   # make sure factor variables are set for species names
-  fortypnm_gp = as.factor(fortypnm_gp),
-  species_gp_n = as.factor(species_gp_n),
+  fortypnm_gp = factor(fortypnm_gp),
+  species_gp_n = factor(species_gp_n),
+  Fire_ID = factor(Fire_ID),
+  grid_idx = as.numeric(as.factor(grid_idx)),
   # proportion of contributing AFD during daytime observations
   day_prop = day_count / afd_count,
   # log-scaled outcomes
@@ -50,6 +53,8 @@ grid_tm <-  read_csv(fp) %>% # read in the file
   log_frp_csum = log(frp_csum + 1e-5),
   log_frp_max_day = log(frp_max_day + 1e-5),
   log_frp_max_night = log(frp_max_night + 1e-5),
+  log_frp_csum_day = log(frp_csum_day + 1e-5),
+  log_frp_csum_night = log(frp_csum_night + 1e-5),
   # Create a "season" variable based on the month
   season = case_when(
    fire_month %in% c(3, 4, 5) ~ "spring",
@@ -60,6 +65,7 @@ grid_tm <-  read_csv(fp) %>% # read in the file
   year_season = interaction(fire_year, season, drop = TRUE),
   # Factorize the temporal attributes
   season = factor(season),
+  fire_year = factor(fire_year),
   year_season = factor(year_season),
   # scale the percentages
   fortyp_pct = fortyp_pct / 100,
@@ -67,7 +73,7 @@ grid_tm <-  read_csv(fp) %>% # read in the file
   # create a species presence flag
   presence = factor(if_else(ba_live > 0 | tpp_live > 0, 1, 0))) %>%
  # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_index, Fire_ID, fortypnm_gp, .keep_all = TRUE) # remove duplicates
+ distinct(grid_idx, fortypnm_gp, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
 
 # Check how many grids are > 50% forested
@@ -109,7 +115,10 @@ cor_da <- grid_tm %>%
  select(
   fortypnm_gp, # forest type (factor)
   forest_pct, fortyp_pct, # forest and forest type percent
+  canopypct_mean, balive_sum, # grid-level mean canopy percent and balive
   erc, erc_dv, vpd, vpd_dv, # climate
+  fm1000, fm1000_dv, rmin, rmin_dv, # climate
+  tmmx, tmmx_dv, vs, vs_dv, #climate
   elev, slope, tpi, chili  # topography
  ) %>%
  pivot_wider(
@@ -165,11 +174,15 @@ da <- grid_tm %>%
  # keep only grids where predominant species cover > 50%
  filter(fortyp_pct > 0.50) %>%
  # select the columns we need for modeling
- select(grid_index, Fire_ID, # ID columns
+ select(grid_index, grid_idx, Fire_ID, # ID columns
         fire_year, season, year_season, # temporal effects
-        log_frp_max_day, CBIbc_p90, CBIbc_p95, CBIbc_mean, # response variables
+        log_frp_max_day, log_frp_csum, log_frp_csum_day, # FRP response variables
+        CBIbc_p90, CBIbc_p95, CBIbc_p99, CBIbc_mean, # CBI response variables
         fortypnm_gp, fortyp_pct, forest_pct, # forest type and percent cover
+        canopypct_mean, balive_sum, # canopy percent and total live basal area
         erc, erc_dv, vpd, vpd_dv, # climate
+        fm1000, fm1000_dv, rmin, rmin_dv, # climate
+        tmmx, tmmx_dv, vs, vs_dv, #climate
         elev, slope, tpi, chili, # topography
         presence, # species presence (binary factor)
         x, y # grid centroid coordinate for spatial fields model
@@ -179,7 +192,10 @@ da <- grid_tm %>%
   across(
    c(
     forest_pct, fortyp_pct, # forest and forest type percent
+    canopypct_mean, balive_sum, # canopy percent and total live basal area
     erc, vpd, vpd_dv, erc_dv, # climate
+    fm1000, fm1000_dv, rmin, rmin_dv, # climate
+    tmmx, tmmx_dv, vs, vs_dv, #climate
     elev, slope, tpi, chili # topography
    ),
    ~ as.numeric(scale(.))
@@ -187,27 +203,25 @@ da <- grid_tm %>%
  ) %>%
  # rename the response variables
  rename(
-  frp = log_frp_max_day,
+  frp_day = log_frp_max_day,
+  frp_csum = log_frp_csum,
+  frp_csum_day = log_frp_csum_day,
   cbi_p90 = CBIbc_p90,
   cbi_p95 = CBIbc_p95,
+  cbi_p99 = CBIbc_p99,
   cbi_mn = CBIbc_mean,
   fire_id = Fire_ID
  ) %>%
- # remake the grid_index to be unique across fires
- mutate(
-  grid_index = as.numeric(as.factor(paste0(fire_id,grid_index)))
- ) %>%
  # keep just one row per grid cell by predominant type
- distinct(grid_index, fortypnm_gp, .keep_all = TRUE) %>%
- arrange(grid_index)
-glimpse(da)
+ distinct(grid_idx, fortypnm_gp, .keep_all = TRUE) %>%
+ arrange(grid_idx)
 
 
 ########################################################
 # Check on the grid cell counts for daytime observations
 # After filtering, make sure we have enough grids per fire
 grid_counts <- da %>%
- distinct(fire_id, grid_index) %>% # keep only distinct rows
+ distinct(fire_id, grid_idx) %>% # keep only distinct rows
  group_by(fire_id) %>%
  summarise(n_grids = n())
 summary(grid_counts$n_grids)
@@ -227,7 +241,7 @@ rm(grid_counts, idx)
 gc()
 
 # check how many grids and fires
-length(unique(da$grid_index))
+length(unique(da$grid_idx))
 length(unique(da$fire_id))
 
 # check how many grids of each forest type there are
@@ -243,9 +257,16 @@ da %>%
  ungroup()
 
 # Subset species with too few observations
-da.s <- da %>%
- filter(!fortypnm_gp %in% c("rocky_mountain_juniper","oak_woodland")) %>%
+drop_spps = c("rocky_mountain_juniper", "oak_woodland")
+print("Dropping small classes:")
+print(dim(da%>%filter(fortypnm_gp%in%drop_spps)))
+da <- da %>%
+ filter(!fortypnm_gp %in% drop_spps) %>%
  mutate(fortypnm_gp = droplevels(fortypnm_gp))
+
+# Tidy up!
+rm(grid_tm)
+gc()
 
 
 
@@ -260,10 +281,10 @@ set.seed(435)
 # 1. Baseline model (no latent effects)
 
 # Set up the model formula
-mf.frp <- frp ~ 
+mf.frp <- frp_day ~ 
  fortypnm_gp + # predominant forest type
  forest_pct + # percent of grid of predominant forest type
- erc_dv + # energy release component (ERC)
+ erc_dv + # energy release component (ERC) and wind speed
  slope + tpi + chili # topography
 
 # fit the model                     
@@ -278,13 +299,15 @@ model_bl.frp <- inla(
 )
 summary(model_bl.frp)
 
-
-
+ 
 ##############################################
 # 2. Baseline model + fire-level random effect
 
+# specify a pc-prior for the random effect
+hyper_pr <- list(
+ prec = list(prior = "pc.prec", param = c(1, 0.1))
+)
 # update the model formula
-hyper_pr <- list(prec = list(prior = "pc.prec", param = c(2, 0.5)))
 mf.frp.re <- update(
  mf.frp, . ~ 1 + . + 
   f(fire_id, model = "iid", hyper = hyper_pr) # fire-level random effect
@@ -297,23 +320,86 @@ model_bl.frp.re <- inla(
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.01)) 
+  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
  )   
 )
 summary(model_bl.frp.re)
 
 
+#######################################################################
+# 3. Baseline model + fire-level random effect + temporal random effect
+
+# specify a pc-prior for the random effect
+hyper_pr <- list(
+ prec = list(prior = "pc.prec", param = c(1, 0.01))
+)
+# update the model formula
+mf.frp.re2 <- update(
+ mf.frp.re, . ~ 1 + . + 
+  f(year_season, model = "iid", hyper = hyper_pr) # temporal random effect
+)
+
+# fit the model                     
+model_bl.frp.re2 <- inla(
+ mf.frp.re2, data = da, 
+ family = "gaussian",
+ control.predictor = list(compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.01)) 
+ )   
+)
+summary(model_bl.frp.re2)
+
+
+##################
+# Model comparison
+
+model_comparison <- tibble(
+ Model = c("Baseline", "Baseline + Fire RE", "Baseline + Fire + Temporal RE"),
+ DIC = c(
+  model_bl.frp$dic$dic,
+  model_bl.frp.re$dic$dic,
+  model_bl.frp.re2$dic$dic
+ ),
+ WAIC = c(
+  model_bl.frp$waic$waic,
+  model_bl.frp.re$waic$waic,
+  model_bl.frp.re2$waic$waic
+ ),
+ Marginal_LogLikelihood = c(
+  model_bl.frp$mlik[1],
+  model_bl.frp.re$mlik[1],
+  model_bl.frp.re2$mlik[1]
+ ),
+ Effective_Params = c(
+  model_bl.frp$dic$p.eff,
+  model_bl.frp.re$dic$p.eff,
+  model_bl.frp.re2$dic$p.eff
+ )
+) %>% arrange(WAIC)
+ 
+# Print the comparison table
+print(model_comparison)
+
+# # Tidy up !
+# rm(model_bl.frp, model_bl.frp.re, model_bl.frp.re2)
+# gc()
+
+
 ###########################################
-# 3. Baseline model + spatial random effect
+# 4. Baseline model + spatial random effect
 
 # spatial points representing grid centroids
-da$grid_index <- as.numeric(as.factor(da$grid_index)) # ensure numeric values
-grid_sf <- st_as_sf(da, coords = c("x", "y"), crs = 4326)
-coords <- st_coordinates(grid_sf)
+da$grid_idx <- as.numeric(as.factor(da$grid_idx))
+grid_sf <- da %>%
+ distinct(grid_idx, x, y, .keep_all = TRUE) %>%
+ st_as_sf(., coords = c("x", "y"), crs = 4326)
+coords <- grid_sf %>% st_coordinates(.)
 
 # k-nearest neighbor and symmetric matrix
-nbs <- knearneigh(coords, k = 5, longlat = TRUE)
-nbs <- knn2nb(nbs, row.names = da$grid_index, sym = TRUE) #force symmetry!!
+nbs <- knearneigh(coords, k = 3, longlat = TRUE)
+nbs <- knn2nb(nbs, row.names = grid_sf$grid_idx, sym = TRUE) #force symmetry!!
 # plot
 fire_sf <- grid_sf %>% filter(fire_id == 51)
 plot(st_geometry(fire_sf), col = "grey")
@@ -322,7 +408,7 @@ title("KNN Adjacency Structure")
 
 # setup for INLA
 nb2INLA("cl_graph",nbs)
-am_adj <-paste(getwd(),"/cl_graph",sep="")
+am_adj <-paste(getwd(),"data/spatial/cl_graph",sep="")
 H <- inla.read.graph(filename="cl_graph")
 
 
@@ -330,27 +416,25 @@ H <- inla.read.graph(filename="cl_graph")
 # update the model formula
 mf.frp.sp <- update(
  mf.frp.re, . ~ 1 + . + 
-  f(grid_index, 
+  f(grid_idx, 
     model = "bym2", 
     graph = H, 
     hyper = list(
      phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
-     prec = list(prior = "pc.prec", param = c(1, 0.01))  # Overall variance
-    ), 
-    constr = T,
-    scale.model = T
+     prec = list(prior = "pc.prec", param = c(1, 0.1))  # Overall variance
+    )
    )
 )
 
 # fit the model
 model_bl.frp.sp <- inla(
  mf.frp.sp, 
- data = da.s, 
+ data = da, 
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.01)) 
+  prec = list(prior = "pc.prec", param = c(1, 0.5)) 
  )  
 )
 
@@ -364,7 +448,7 @@ summary(model_bl.frp.sp)
 
 # handle 0s in the data
 # we looked at these ... many are boundary grids
-da.cbi <- da.s %>%
+da.cbi <- da %>%
  filter(cbi_p90 > 0)
 
 # examine the distributions of CBIbc variables
@@ -449,7 +533,7 @@ mf.cbi.sp <- update(
     model = "bym2", 
     graph = H, 
     hyper = list(
-     phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
+     phi = list(prior = "pc", param = c(0.5, 0.5)),  # Proportion of spatial effect
      prec = list(prior = "pc.prec", param = c(1, 0.01))  # Overall variance
     ), 
     constr = T
@@ -464,12 +548,38 @@ model_bl.cbi.sp <- inla(
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.5)) 
+  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
  )  
 )
 
 summary(model_bl.cbi.sp)
 
+
+###########################################
+# 3. Baseline model + spatial random effect
+
+da.cbi <- da.cbi %>%
+ mutate(fire_id = as.numeric(as.factor(fire_id)))
+##########################
+# update the model formula
+mf.cbi.sp.re <- update(
+ mf.cbi, . ~ 1 + . + 
+  f(fire_id)
+)
+
+# fit the model
+model_bl.cbi.sp.re <- inla(
+ mf.cbi.sp.re, 
+ data = da.cbi, 
+ family = "gamma",
+ control.predictor = list(compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
+ )  
+)
+
+summary(model_bl.cbi.sp.re)
 
 
 # Tidy up !
@@ -587,8 +697,8 @@ tidy_combined <- bind_rows(tidy_frp, tidy_cbi)
 
 # pull out the climate + topo
 climate_topo <- tidy_combined %>%
- filter(parameter %in% c("erc", "vpd", "elev", "slope", "tpi", "chili")) %>%
- mutate(parameter = factor(parameter, levels = c("erc", "vpd", "elev", "slope", "tpi", "chili")))
+ filter(parameter %in% c("erc_dv", "slope", "tpi", "chili")) %>%
+ mutate(parameter = factor(parameter, levels = c("erc_dv", "slope", "tpi", "chili")))
 
 # Filter for forest type effects
 tidy_combined <- tidy_combined %>%
@@ -653,7 +763,7 @@ p_climate_topo <- ggplot(climate_topo, aes(x = x, y = parameter, height = y, fil
   fill = "Response"
  ) +
  scale_fill_manual(
-  values = c("FRP" = "#FEB24C", "CBIbc" = "#800026"),
+  values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
   labels = c("FRP" = "Maximum Daytime FRP", "CBIbc" = "90th Percentile CBIbc")
  ) +
  theme_classic() +
@@ -694,7 +804,7 @@ hist(grid_sf.eff$mean, breaks = 50, col = "skyblue")
 # Use the Williams Fork Fire as an example
 fire_sf <- grid_sf.eff %>% filter(fire_id == 51) %>% st_transform(st_crs(5070))
 ggplot(fire_sf) +
- geom_sf(aes(color = mean)) +
+ geom_sf(aes(color = mean), size=2.5) +
  scale_color_viridis_c(option = "magma") +
  theme_minimal()
 
@@ -710,11 +820,14 @@ st_effects <- model_bl.frp.sp$summary.random$grid_index$mean[1:n] *
  model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"]
 un_effects <- model_bl.frp.sp$summary.random$grid_index$mean[1:n] * 
  (1 - model_bl.frp.sp$summary.hyperpar$mean["Phi for grid_index"])
+
 # Add components to spatial data
 grid_sf.eff <- grid_sf.eff %>%
  mutate(structured = st_effects, unstructured = un_effects)
+
 # Grab our test fire again
 fire_sf <- grid_sf.eff %>% filter(fire_id == 51)
+
 # Plot structured vs unstructured effects
 p1 <- ggplot(fire_sf) +
  geom_sf(aes(color = structured), color = NA) +
