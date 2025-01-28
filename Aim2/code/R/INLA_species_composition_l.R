@@ -38,9 +38,6 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  ) %>% 
  # create a numeric fire ID
  mutate(
-  # Set the random effects (IDs) as numeric factors
-  Fire_ID = as.numeric(as.factor(Fire_ID)),
-  grid_index = as.numeric(as.factor(grid_index)),
   # Format species names consistently
   fortypnm_gp = str_to_lower(fortypnm_gp),
   fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
@@ -88,7 +85,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   ba_live_pr >= 0.05 | tpp_ld_pr >= 0.1
  ) %>%
  # Group by grid and sum dead BA and TPP separately
- group_by(grid_index) %>%
+ group_by(grid_idx) %>%
  mutate(
   total_tpp_live = sum(tpp_live, na.rm = TRUE),
   total_ba_live = sum(ba_live, na.rm = TRUE),
@@ -171,13 +168,14 @@ spp_coo <- top_spps %>%
   .groups = "drop"
  ) %>%
  mutate(
-  fr = n / n_grids,
+  wt = n / n_grids,
   # Apply a smoothed scaling to balance rare/common pairs
-  wt_sc = 1 + log(1 + 10 * fr),  # 1 + log(1 + k * fr); k=scaling factor
-  wt_sc_inv = 1 / wt_sc,  # Optionally invert for comparison
-  wt_sq = sqrt(fr), # square root
-  wt_sq_inv = 1 / wt_sq, # inverse square root
-  wt_norm = (wt_sc - min(wt_sc)) / (max(wt_sc) - min(wt_sc))
+  wt_inv = 1 / wt, # Inverse frequency scaling
+  wt_log = log(wt + 1e-5),  # Optionally invert for comparison
+  wt_log_inv = 1 / log(wt + 1e-5),
+  wt_sq = sqrt(wt), # square root
+  wt_sq_inv = 1 / sqrt(wt), # inverse square root
+  wt_norm = (wt_log - min(wt_log)) / (max(wt_log) - min(wt_log))
  )
 head(spp_coo,15)
 
@@ -190,12 +188,12 @@ spp_coo %>%
 # gather list of rare pairings
 rare_tr <- 0.01  # Threshold for rare species pairs (1% of grids)
 rare_pairs <- spp_coo %>%
- filter(fr < rare_tr) %>%
+ filter(wt < rare_tr) %>%
  pull(spp_pair)
 rare_pairs
 
 # check the weights distribution
-ggplot(spp_coo, aes(x = fr, y = wt_sc_inv)) +
+ggplot(spp_coo, aes(x = wt, y = wt_sq)) +
  geom_point(color = "blue") +
  labs(title = "Weight Scaling for Species Pairs", 
       x = "Fractional Occurrence (fr)", 
@@ -362,8 +360,9 @@ da <- grid_tm %>%
   fm1000, fm1000_dv, rmin, rmin_dv, # climate
   tmmx, tmmx_dv, vs, vs_dv, #climate
   elev, slope, tpi, chili, # topography
-  spp_pair, n, fr, wt_sc, wt_sc_inv, 
-  wt_sq, wt_sq_inv, wt_norm # species predominant pair and weights
+  spp_pair, n, wt, wt_log, wt_log_inv, 
+  wt_sq, wt_sq_inv, wt_norm, # species predominant pair and weights
+  x, y # coordinates
  ) %>%
  # rename the response variables
  rename(
@@ -386,6 +385,39 @@ if (nrow(da %>% filter(is.na(spp_pair))) == 0) {
  print("No NaN values for species pair")
 } # should be 0
 
+#################################
+# Create a wide-format data frame
+da.w <- da %>%
+ select(grid_index, fire_id, 
+        species_gp_n, fortypnm_gp,
+        forest_pct, canopypct_mean, balive_sum,
+        frp_day, frp_csum, cbi_p90, cbi_mn,
+        ba_live_pr, qmd_live, tpp_live,
+        erc_dv, slope, tpi, chili, # topography
+       ) %>%
+ # Pivot to wide format with species as a prefix
+ pivot_wider(
+  # Keep the grid-level attributes
+  id_cols = c(grid_index, fire_id, 
+              frp_day, frp_csum, cbi_p90,
+              fortypnm_gp, forest_pct,
+              canopypct_mean, balive_sum,
+              erc_dv, slope, tpi, chili),
+  names_from = species_gp_n, 
+  values_from = c(ba_live_pr, qmd_live, tpp_live),
+  names_sep = "_"
+ ) %>%
+ mutate(
+  # Replace NA with 0 for all BA and TPP columns
+  across(starts_with("ba_"), ~replace_na(., 0)),
+  across(starts_with("tpp_"), ~replace_na(., 0)),
+  across(starts_with("qmd_"), ~replace_na(., 0)),
+  # Ensure values are numeric
+  across(c(starts_with("ba_"), starts_with("tpp_"), starts_with("qmd_")), ~as.numeric(.))
+ )
+# Check the transformed dataset
+glimpse(da.w)
+
 
 #===========MODEL FITTING==============#
 
@@ -397,11 +429,28 @@ if (nrow(da %>% filter(is.na(spp_pair))) == 0) {
 # FRP
 
 # setup the model formula
+mf.frp <- frp_csum ~ 
+ fortypnm_gp * (ba_live_pr_lodgepole + ba_live_pr_mixed_conifer + ba_live_pr_quaking_aspen +
+                 ba_live_pr_spruce_fir + ba_live_pr_gambel_oak + ba_live_pr_piñon_juniper +
+                 ba_live_pr_ponderosa + ba_live_pr_rocky_mountain_juniper) +
+ forest_pct + # grid-level forest cover
+ erc_dv + slope + tpi + chili # climate + topography
+# fit the model
+model_tm <- inla(
+ mf.frp, data = da.w,
+ family = "gaussian",
+ control.predictor = list(compute=T),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(prec = 0.01)  # Penalize high precision
+)
+summary(model_tm)
+
+# setup the model formula
 mf.frp <- frp_day ~ 1 + 
- fortypnm_gp:H_tpp + # species diversity (abundance) by predominant forest type
+ fortypnm_gp:H_ba + # species diversity (dominance) by predominant forest type
  species_gp_n:ba_live_pr + # species proportion of live basal area
  species_gp_n:qmd_live + # species quadratic mean diameter
- forest_pct * canopypct_mean + # grid-level forest cover
+ forest_pct + # grid-level forest cover
  erc_dv + slope + tpi + chili # climate + topography
 
 # fit the model
@@ -454,11 +503,10 @@ prec_mat <- Matrix(0, nrow = n_pairs, ncol = n_pairs, sparse = TRUE)
 rownames(prec_mat) <- spp_pairs
 colnames(prec_mat) <- spp_pairs
 # populate diagonal with weights
-# log-scaled fractional occurrence (wt_sc)
 # appropriate for balancing rare/common pairings
 for (pair in spp_pairs) {
- wt_sc <- mean(da$wt_sc[da$spp_pair == pair])  # Use mean weight for each spp_pair
- prec_mat[pair, pair] <- wt_sc
+ wt_sq_inv <- mean(da$wt_sq_inv[da$spp_pair == pair])  # Use mean weight for each spp_pair
+ prec_mat[pair, pair] <- wt_sq_inv
 }
 # check positive-definiteness
 if (!all(eigen(prec_mat)$values > 0)) {
@@ -490,9 +538,8 @@ mf.frp.re.spp <- update(
  mf.frp.re, 
  . ~ 1 + . + 
   f(spp_pair, model = "generic0", Cmatrix = prec_mat, 
-    values = levels(da$spp_pair), hyper = hyper_pr.spp
-    )
- )
+    values = levels(da$spp_pair), hyper = hyper_pr.spp)
+)
 
 # fit the model
 model_tm.re.spp <- inla(
@@ -508,6 +555,66 @@ summary(model_tm.re.spp)
 ########################
 # Add the spatial effect
 
+# spatial points representing grid centroids
+da$grid_index <- as.numeric(as.factor(da$grid_index))
+grid_sf <- da %>%
+ distinct(grid_index, x, y, .keep_all = TRUE) %>%
+ st_as_sf(., coords = c("x", "y"), crs = 4326) %>%
+ arrange(grid_index)
+coords <- grid_sf %>% st_coordinates(.)
+
+# Check for mismatches
+setdiff(da$grid_index, grid_sf$grid_index)
+setdiff(grid_sf$grid_index, da$grid_index)
+
+# k-nearest neighbor and symmetric matrix
+nbs <- knearneigh(coords, k = 7, longlat = TRUE)
+nbs <- knn2nb(nbs, row.names = grid_sf$grid_index, sym = TRUE) #force symmetry!!
+
+# check for disconnected components
+comp <- spdep::n.comp.nb(nbs)
+print(table(comp$comp.id)) 
+
+# plot
+fire_sf <- grid_sf %>% filter(fire_id == 51)
+plot(st_geometry(fire_sf), col = "grey")
+plot(nbs, coords, add = TRUE, col = "red", lwd = 0.5)
+title("KNN Adjacency Structure")
+
+# setup for INLA
+nb2INLA("cl_graph",nbs)
+am_adj <-paste(getwd(),"data/spatial/cl_graph",sep="")
+H <- inla.read.graph(filename="cl_graph")
+
+da$grid_index <- factor(da$grid_index)
+
+##########################
+# update the model formula
+mf.frp.sp <- update(
+ mf.frp.re, . ~ 1 + . + 
+  f(grid_index,
+    model = "bym2", 
+    graph = H, 
+    hyper = list(
+     phi = list(prior = "pc", param = c(0.5, 0.3)),  # Proportion of spatial effect
+     prec = list(prior = "pc.prec", param = c(1, 0.5))  # Overall variance
+    ),
+    constr = T
+  )
+)
+
+# fit the model
+model_tm.frp.sp <- inla(
+ mf.frp.sp, 
+ data = da, 
+ family = "gaussian",
+ control.predictor = list(compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
+ )  
+)
+summary(model_tm.frp.sp)
 
 
 ########################
