@@ -89,7 +89,6 @@ grid_tm <-  read_csv(fp) %>% # read in the file
   log_frp_p90 = log(frp_p90_day + 1e-5),
   log_frp_p95 = log(frp_p95_day + 1e-5),
   # scale the percentages
-  fortyp_pct = fortyp_pct / 100,
   forest_pct = forest_pct / 100,
   # create a species presence flag
   presence = factor(if_else(ba_live > 0 | tpp_live > 0, 1, 0))) %>%
@@ -347,7 +346,7 @@ set.seed(435)
 # Set up the model formula
 mf.frp <- frp_csum ~ 
  fortypnm_gp + # predominant forest type
- forest_pct + # percent of grid of predominant forest type
+ forest_pct + # grid-level mean canopy percent
  erc + tmmx_dv + vs + # climate/weather
  slope + tpi + chili # topography
 # fit the model                     
@@ -422,10 +421,11 @@ grid_sf <- da %>%
  st_as_sf(., coords = c("x", "y"), crs = 4326) %>%
  mutate(grid_index = as.numeric(as.factor(grid_index)))
 coords <- grid_sf %>% st_coordinates(.)
-st_write(grid_sf, paste0(maindir,"data/spatial/mod/model_grid_centroids.gpkg"))
+st_write(grid_sf, paste0(maindir,"data/spatial/mod/model_grid_centroids.gpkg"),
+         append = F)
 
 # k-nearest neighbor and symmetric matrix
-nbs <- knearneigh(coords, k = 7, longlat = T)
+nbs <- knearneigh(coords, k = 5, longlat = T)
 nbs <- knn2nb(nbs, row.names = grid_sf$grid_index, sym = T) #force symmetry!!
 
 # plot the adjacency structure for one fire
@@ -444,10 +444,6 @@ am_adj <- paste(getwd(),"data/spatial/cl_graph",sep="")
 H <- inla.read.graph(filename="cl_graph")
 
 ##########################
-# specify a pc-prior for the random effect
-hyper_pr.fire <- list(
- prec = list(prior = "pc.prec", param = c(1, 0.1))
-)
 # update the model formula
 mf.frp.sp <- update(
  mf.frp.re, . ~ 1 + . + 
@@ -457,8 +453,8 @@ mf.frp.sp <- update(
     scale.model = T,
     constr = T,
     hyper = list(
-     phi = list(prior = "pc", param = c(0.8, 2/3)),  # Proportion of spatial effect
-     prec = list(prior = "pc.prec", param = c(1, 0.1))  # Overall variance
+     phi = list(prior = "pc", param = c(0.5, 2/3)),  # Proportion of spatial effect
+     prec = list(prior = "loggamma", param = c(0.1, 0.1))  # Overall variance
     )
    )
 )
@@ -475,10 +471,11 @@ model_bl.frp.sp <- inla(
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.5)) 
+  prec = list(prior = "pc.prec", param = c(1, 0.1)) 
  )
 )
 summary(model_bl.frp.sp)
+
 
 
 
