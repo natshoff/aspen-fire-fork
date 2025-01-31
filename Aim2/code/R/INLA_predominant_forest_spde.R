@@ -149,7 +149,7 @@ rm(dom_fortyp)
 
 ####################################
 # distribution of response variables
-grid_tm %>%
+resp_plot <- grid_tm %>%
  # pivot longer to facet plot
  pivot_longer(cols = c(log_frp_max_day, 
                        log_frp_csum, 
@@ -170,10 +170,12 @@ grid_tm %>%
  labs(x = "value",
       y = "Frequency") +
  theme_minimal()
+resp_plot
 
 # save the plot.
 out_png <- paste0(maindir,'figures/INLA_ResponseDistribution.png')
 ggsave(out_png, dpi=500, bg = 'white')
+rm(resp_plot)
 
 ####################
 # correlation matrix
@@ -200,7 +202,7 @@ cor_da <- grid_tm %>%
 cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
 
 # Plot correlation matrix
-ggcorrplot(
+cor_plot <- ggcorrplot(
  cor_mat,
  method = "circle",  # Circle or square for visualization
  type = "lower",  # Lower triangle of the correlation matrix
@@ -209,6 +211,7 @@ ggcorrplot(
  tl.cex = 10,  # Text label size
  colors = c("blue", "white", "red")  # Color gradient
 )
+cor_plot
 
 rm(cor_da, cor_mat)
 gc()
@@ -216,7 +219,7 @@ gc()
 # save the plot.
 out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_Fortyp.png')
 ggsave(out_png, dpi=500, bg = 'white')
-
+rm(cor_plot)
 
 
 #===========MODEL SETUP==============#
@@ -366,8 +369,6 @@ rm(fire_div)
 gc()
 
 #################################################
-
-
 # Subset species with too few observations
 print("Dropping small classes:")
 print(dim(da%>%filter(fortypnm_gp == "oak_woodland")))[1]
@@ -434,17 +435,7 @@ gc()
 # da$aspen <- as.factor(da$aspen)
 # levels(da$aspen)
 
-# # Create the box plot
-# ggplot(da, aes(x = aspen, y = frp_day, fill = aspen)) +
-#  geom_boxplot(outlier.shape = NA, alpha = 0.6) + 
-#  scale_fill_manual(values = c("0" = "darkorange", "1" = "forestgreen")) +
-#  labs(
-#   title = "Comparison of FRP between Fires With and Without Aspen",
-#   x = "Aspen Presence (0 = No, 1 = Yes)",
-#   y = "Fire Radiative Power (FRP)"
-#  ) +
-#  theme_minimal() +
-#  theme(legend.position = "none")
+
 
 #===========MODEL FITTING==============#
 
@@ -473,7 +464,9 @@ model_bl.frp <- inla(
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.01))
+ )
 )
 summary(model_bl.frp)
 
@@ -482,13 +475,14 @@ summary(model_bl.frp)
 # temporal effect for the first burn day
 
 # specify a pc-prior for the random effect
-hyper_pr.t <- list(
- prec = list(prior = "pc.prec", param = c(1, 0.1))
-)
+hyper_pr.t <- 
 # update the model formula
 mf.frp.re <- update(
  mf.frp, . ~ . + 
-  f(first_obs_date, model = "iid", hyper = hyper_pr.t) # temporal random effect
+  f(first_obs_date, model = "iid", 
+    hyper = list(
+     prec = list(prior = "pc.prec", param = c(1, 0.1))
+    )) # temporal random effect
 )
 # fit the model                     
 model_bl.frp.re <- inla(
@@ -496,21 +490,22 @@ model_bl.frp.re <- inla(
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.01))
+ )
 )
 summary(model_bl.frp.re)
 
 ##############################################
 # 2. Baseline model + fire-level random effect
 
-# specify a pc-prior for the random effect
-hyper_pr.fire <- list(
- prec = list(prior = "pc.prec", param = c(1, 0.1))
-)
 # update the model formula
 mf.frp.re2 <- update(
  mf.frp.re, . ~ . + 
-  f(fire_id, model = "iid", hyper = hyper_pr.fire) # fire-level random effect
+  f(fire_id, model = "iid", 
+    hyper = list(
+     prec = list(prior = "pc.prec", param = c(1, 0.1))
+  )) # fire-level random effect
 )
 # fit the model                     
 model_bl.frp.re2 <- inla(
@@ -518,7 +513,9 @@ model_bl.frp.re2 <- inla(
  family = "gaussian",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+ control.fixed = list(
+  prec = list(prior = "pc.prec", param = c(1, 0.01))
+ )
 )
 summary(model_bl.frp.re2)
 
@@ -529,9 +526,10 @@ mean(model_bl.frp.re2$cpo$cpo, na.rm = TRUE)
 
 
 
-#######################################################
-# 5. Grouped SPDE approach for spatial modeling by fire
-# extract spatial coordinates for grid centroids
+##########################################
+# 5. Spatial model using the SPDE approach
+
+# extracting spatial coordinates for grid centroids
 grid_sf <- da %>%
  arrange(grid_index) %>%
  distinct(grid_index, x, y, .keep_all = TRUE) %>%
@@ -541,9 +539,9 @@ coords <- grid_sf %>% st_coordinates(.)
 st_write(grid_sf, paste0(maindir,"data/spatial/mod/model_grid_centroids.gpkg"),
          append = F)
 
-###################################################
-# fit a semivariogram to look at spatial dependence
-###################################################
+##########################################################
+# fit a semivariogram to look at spatial dependence in FRP
+##########################################################
 
 # reproject
 sp <-  grid_sf %>%
@@ -622,6 +620,7 @@ mesh <- inla.mesh.2d(
 plot(mesh, main = "SPDE Mesh for FRP Model")
 points(coords, col = "red", pch = 20)
 
+
 ###################################################
 # Save a spatial file of the mesh grid and vertices
 ###################################################
@@ -689,7 +688,7 @@ str(field.idx)
 # Create a data frame for the predictors
 # baseline model includes predominant forest type, climate, and topography
 X <- da %>% 
- select(fire_id, fire_id_num, first_obs_date, 
+ select(fire_id, first_obs_date, 
         fortypnm_gp, canopypct, erc_dv, vpd, vs,
         slope, tpi, chili, aspen, day_prop)
 head(X)
@@ -720,15 +719,12 @@ model_bl.frp.sp <- inla(
  data = inla.stack.data(stack.frp), 
  family = "gaussian",
  control.predictor = list(A = inla.stack.A(stack.frp), compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
  control.fixed = list(
   prec = list(prior = "pc.prec", param = c(1, 0.1))
  )
 )
 summary(model_bl.frp.sp)
-
-rm(coords, coords_mat, stack.frp)
-gc()
 
 
 #=================MODEL COMPARISON=================#
@@ -776,7 +772,8 @@ print(model_comparison)
 
 
 # Tidy up !
-rm(model_bl.frp, model_bl.frp.re, model_bl.frp.re2)
+rm(coords, coords_mat, mesh, spde.ml, grid_sf, field.idx, A, stack.frp,
+   model_bl.frp, model_bl.frp.re, model_bl.frp.re2, X)
 gc()
 
 
@@ -788,13 +785,14 @@ gc()
 # COMPOSITE BURN INDEX #
 
 # examine the distributions of CBIbc variables
-da <- da %>%
+da.cbi <- da %>%
+ filter(cbi_p90 > 0) %>%
  mutate(
   log_cbi_mn = log(cbi_mn),
   sqrt_cbi_p90 = sqrt(cbi_p90),
   sqrt_cbi_p99 = sqrt(cbi_p99)
  ) 
-da %>%
+da.cbi %>%
  # pivot longer to facet plot
  pivot_longer(cols = c(cbi_p90, sqrt_cbi_p90,
                        cbi_p99, sqrt_cbi_p99,
@@ -828,87 +826,233 @@ ggsave(out_png, dpi=500, bg = 'white')
 # Set up the model formula
 mf.cbi <- sqrt_cbi_p90 ~ 
  fortypnm_gp + # predominant forest type
- forest_pct + # percent of grid of predominant forest type
- erc_dv + vs + # energy release component (ERC)
- slope + tpi + chili # topography
+ canopypct + # grid-level mean canopy percent
+ erc_dv + vpd + vs + # climate/weather
+ slope + tpi + chili + # topography
+ aspen + # fire-level aspen presence
+ day_prop # grid-level proportion of daytime observations
 # fit the model                     
 model_bl.cbi <- inla(
- mf.cbi, data = da, 
+ mf.cbi, data = da.cbi, 
  family = "gamma", 
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = list(prior = "loggamma", param = c(0.1, 0.1)))
+ control.fixed = list(prec = list(prior = "laggamma", param = c(1, 0.01)))
 )
 summary(model_bl.cbi)
 
+
 ##############################################
-# 2. Baseline model + fire-level random effect
+# 2. Baseline model + temporal random effect
 
 # update the model formula
-hyper_pr <- list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
 mf.cbi.re <- update(
  mf.cbi, . ~ 1 + . + 
-  f(fire_id, model = "iid", hyper = hyper_pr) # fire-level random effect
+  f(first_obs_date, model = "iid", 
+    hyper = list(prec = list(prior = "loggamma", param = c(2, 0.01)))
+    ) # fire-level random effect
 )
 # fit the model                     
 model_bl.cbi.re <- inla(
- mf.cbi.re, data = da, 
+ mf.cbi.re, data = da.cbi, 
  family = "gamma",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = list(prior = "loggamma", param = c(0.1, 0.1))) 
+ control.fixed = list(prec = list(prior = "loggamma", param = c(1, 0.01))) 
 )
 summary(model_bl.cbi.re)
 
-#######################################################################
-# 3. Baseline model + fire-level random effect + temporal random effect
-# temporal effect at the fire-level (day of first observation)
 
-# specify a pc-prior for the random effect
-hyper_pr.time <- list(
- prec = list(prior = "pc.prec", param = c(1, 0.5))
-)
+#######################################################################
+# 3. Baseline model + temporal random effect + fire-level random effect 
+
 # update the model formula
 mf.cbi.re2 <- update(
  mf.cbi.re, . ~ 1 + . + 
-  f(first_obs_date, model = "iid", hyper = hyper_pr.time) # temporal random effect
+  f(fire_id, model = "iid", 
+    hyper = list(prec = list(prior = "loggamma", param = c(2, 0.01)))
+    ) # temporal random effect
 )
 # fit the model                     
 model_bl.cbi.re2 <- inla(
- mf.cbi.re2, data = da, 
- family = "gaussian",
+ mf.cbi.re2, data = da.cbi, 
+ family = "gamma",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = list(prior = "loggamma", param = c(0.5, 0.5)))
+ control.fixed = list(prec = list(prior = "loggamma", param = c(1, 0.1)))
 )
-summary(model_bl.frp.re2)
+summary(model_bl.cbi.re2)
+
 
 ########################################################
 # 4. Baseline model + fire-level + spatial random effect
 
+# extract spatial coordinates for grid centroids
+grid_sf <- da.cbi %>%
+ arrange(grid_index) %>%
+ distinct(grid_index, x, y, .keep_all = TRUE) %>%
+ st_as_sf(., coords = c("x", "y"), crs = 4326)
+# extract coordinates
+coords <- grid_sf %>% st_coordinates(.)
+
+###################################################
+# fit a semivariogram to look at spatial dependence
+###################################################
+
+# reproject
+sp <-  grid_sf %>%
+ st_transform(st_crs(5070))
+
+# Function to compute semivariogram for each fire
+get_fire_vario <- function(fire_id, data) {
+ fire_sp <- data %>% filter(fire_id == !!fire_id)
+ 
+ if (nrow(fire_sp) > 20) {  # Only compute if there are enough points
+  vario <- variogram(sqrt_cbi_p90 ~ 1, data = fire_sp)
+  vario <- vario %>% mutate(fire_id = fire_id)  # Ensure fire_id is added correctly
+  print(paste("Computed variogram for fire:", fire_id, "with", nrow(fire_sp), "points"))
+  return(vario)
+ } else {
+  print(paste("Skipping fire:", fire_id, "- Not enough points"))
+  return(NULL)
+ }
+}
+
+# Apply to each fire separately
+fires <- unique(sp$fire_id)
+variograms <- lapply(fires, get_fire_vario, data = sp)
+variograms <- do.call(rbind, variograms)  # Combine results
+
+# Check if fire_id is still in the dataset
+print(unique(variograms$fire_id))
+
+# Plot variograms grouped by Fire ID
+ggplot(variograms, aes(x = dist, y = gamma, 
+                       group = fire_id, color = fire_id)) +
+ geom_line(alpha = 0.3, size=0.9) +  # Light transparency to see overlap
+ labs(x = "Distance (meters)", y = "Semivariance", 
+      title = "Semivariograms for Individual Fires") +
+ theme_minimal() +
+ theme(legend.position = "none")
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_Fire_SemiVariograms_CBI.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+# Find the approximate range (where semivariance plateaus) for each fire
+range_est <- variograms %>%
+ group_by(fire_id) %>%
+ summarize(range_m = max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE))  # 90% of max
+qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1))
+qt
+# Histogram of estimated spatial ranges
+ggplot(range_est, aes(x = range_m)) +
+ geom_histogram(bins = 20, fill = "blue", alpha = 0.6) +
+ labs(x = "Estimated Range (meters)", y = "Count",
+      title = "Distribution of Within-Fire Spatial Correlation Ranges") +
+ theme_minimal()
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_Fire_EstimatedRange_CBI.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+rm(sp, range_est, variograms)
+gc()
+
+###################################################
+###################################################
+
+# convert coordinates to a matrix for INLA
+coords_mat <- as.matrix(coords) 
+
+# Define the spatial mesh
+mesh <- inla.mesh.2d(
+ loc = coords_mat, # Locations (grid centroids)
+ max.edge = c(1, 5), # Maximum edge lengths (inner and outer)
+ cutoff = 0.02, # Minimum distance between points (0.01deg = ~1.1km)
+ offset = c(0.5, 0.1) # Boundary buffer
+)
+# Plot mesh to check
+plot(mesh, main = "SPDE Mesh for CBI Model")
+points(coords, col = "red", pch = 20)
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_Fire_MeshGrid_CBI.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+######################
+# Build the SPDE model
+spde.ml <- inla.spde2.pcmatern(
+ # Mesh and smoothness parameter
+ mesh = mesh, 
+ alpha = 2,
+ # P(practic.range < 0.3) = 0.5
+ prior.range = c(0.1, 0.5),
+ # P(sigma > 1) = 0.01
+ prior.sigma = c(1, 0.1) # variance
+)
+
+# Compute the projector matrix (A)
+A <- inla.spde.make.A(
+ mesh = mesh,
+ loc = coords_mat
+)
+# check on the A matrix
+dim(A)  # Should be (n_data_locations, n_mesh_vertices)
+sum(rowSums(A) == 0)  # Should be 0 (no unassigned rows)
+table(rowSums(A > 0))  # Should not have zero rows
+table(colSums(A) > 0)  # Ensure all mesh nodes are assigned
+
+# Assign the spatial index
+field.idx <- inla.spde.make.index(
+ name = "mesh.idx",
+ n.spde = spde.ml$n.spde
+)
+str(field.idx)
+
+# Create the FRP INLA stack
+# Isolate the predictor variables first
+# Create a data frame for the predictors
+# baseline model includes predominant forest type, climate, and topography
+X <- da.cbi %>% 
+ select(fire_id, first_obs_date, 
+        fortypnm_gp, canopypct, erc_dv, vpd, vs,
+        slope, tpi, chili, aspen, day_prop)
+head(X)
+
+# Create the INLA data stack
+stack.cbi <- inla.stack(
+ data = list(sqrt_cbi_p90 = da.cbi$sqrt_cbi_p90),
+ A = list(A, 1),  
+ tag = 'est',
+ effects = list(
+  c(field.idx),
+  list(as.data.frame(X))
+ )
+)
+dim(inla.stack.A(stack.cbi))
+
 ##########################
 # update the model formula
 mf.cbi.sp <- update(
- mf.cbi.re, . ~ 1 + . + 
-  f(grid_index, 
-    model = "bym2", 
-    graph = H, 
-    hyper = list(
-     phi = list(prior = "pc", param = c(0.5, 0.3)),  # Proportion of spatial effect
-     prec = list(prior = "pc.prec", param = c(1, 0.5))  # Overall variance
-    )
+ mf.cbi.re2, . ~ . + 
+  f(mesh.idx, 
+    model = spde.ml
   )
 )
 # fit the model
 model_bl.cbi.sp <- inla(
  mf.cbi.sp, 
- data = da, 
+ data = inla.stack.data(stack.cbi), 
  family = "gamma",
- control.predictor = list(compute = TRUE),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = list(prior = "loggamma", param = c(0.1, 0.1)))
+ control.predictor = list(A = inla.stack.A(stack.cbi), compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+ control.fixed = list(
+  prec = list(prior = "loggamma", param = c(1, 0.01))
+ )
 )
 summary(model_bl.cbi.sp)
+
 
 
 #=================MODEL COMPARISON=================#
@@ -949,21 +1093,15 @@ model_comparison <- tibble(
   mean(model_bl.cbi.re$cpo$cpo, na.rm = TRUE),
   mean(model_bl.cbi.re2$cpo$cpo, na.rm = TRUE),
   mean(model_bl.cbi.sp$cpo$cpo, na.rm = TRUE)
- ),
- RMSE = c(
-  sqrt(mean((model_bl.frp$summary.fitted.values$mean - da$sqrt_cbi_p90)^2, na.rm = TRUE)),
-  sqrt(mean((model_bl.frp.re$summary.fitted.values$mean - da$sqrt_cbi_p90)^2, na.rm = TRUE)),
-  sqrt(mean((model_bl.frp.re2$summary.fitted.values$mean - da$sqrt_cbi_p90)^2, na.rm = TRUE)),
-  sqrt(mean((model_bl.cbi.sp$summary.fitted.values$mean - da$sqrt_cbi_p90)^2, na.rm = TRUE))
  )
-) %>% arrange(RMSE)
+) %>% arrange(WAIC)
 # Print the comparison table
 print(model_comparison)
 
 
 # Tidy up !
-rm(coords, fire_sf, H, hyper_pr, model_bl.cbi, 
-   model_bl.cbi.re, model_bl.frp, model_bl.frp.re, nbs)
+rm(coords, coords_mat, model_bl.cbi, model_bl.cbi.re, model_bl.cbi.re2,
+   stack.cbi, mesh, field.idx, A, spde.ml, grid_sf, X)
 gc()
 
 
@@ -1035,12 +1173,10 @@ p1 <- ggplot(effects, aes(x = forest_type, y = effect, color = response)) +
  theme(
   axis.text.x = element_text(angle = 45, hjust = 1, size=10),
   axis.text.y = element_text(angle = 0, hjust = 0, size=10),
-  axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),
-  axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
-  legend.position = c(0.18, 0.16),
+  legend.position.inside = c(0.18, 0.16),  # Updated syntax for legend position
   legend.background = element_rect(
    fill = scales::alpha("white", 0.2), 
-   color = NA, size = 0.5),
+   color = NA, linewidth = 0.5),  # Use `linewidth` instead of `size`
   legend.title = element_text(size = 11),
   legend.text = element_text(size = 10)
  )
@@ -1117,8 +1253,8 @@ p2 <- ggplot(tidy_combined, aes(x = x, y = forest_type, height = y, fill = respo
  theme_classic() +
  theme(axis.text.y = element_text(angle = 0, hjust = 0, size=11),
        axis.text.x = element_text(angle = 0, hjust = 0, size=11),
-       axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),
-       axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
+       axis.title.y = element_text(size=11),
+       axis.title.x = element_text(size=11),
        legend.position = c(0.18, 0.16),
        legend.background = element_rect(
         fill = scales::alpha("white", 0.4), 
@@ -1166,30 +1302,39 @@ ggsave(out_png, plot = p_climate_topo, dpi = 300, bg = 'white')
 ######################################
 # Visualize the spatial random effects
 
-# Extract spatial random effect estimates
-spatial_effects <- model_bl.frp.sp$summary.random$grid_index %>%
- dplyr::select(ID, mean, sd, '0.025quant', '0.5quant', '0.975quant') %>%
- rename(grid_index = ID)
+# extract spatial coordinates for grid centroids
+grid_sf <- da.cbi %>%
+ arrange(grid_index) %>%
+ distinct(grid_index, x, y, .keep_all = TRUE) %>%
+ st_as_sf(., coords = c("x", "y"), crs = 4326)
+# extract coordinates
+coords <- grid_sf %>% st_coordinates(.)
+coords_mat <- as.matrix(coords)
 
-# Join spatial effects back to spatial data
-grid_sf.eff <- grid_sf %>%
- left_join(spatial_effects, by = "grid_index")
-sum(is.na(grid_sf.eff$mean))  # Count missing values
+# Extract spatial field posterior mean for FRP model
+frp_sp <- inla.posterior.sample(model_bl.frp.sp, n = 1)[[1]]$latent
+frp_sp_df <- data.frame(
+ node = 1:length(frp_sp),
+ frp_spatial_effect = frp_sp
+)
 
-# check the histogram of spatial effects across fires
-hist(grid_sf.eff$mean, breaks = 50, col = "skyblue")
 
-# Plot the spatial effects (posterior mean)
-# Use the Williams Fork Fire as an example
-fire_sf <- grid_sf.eff %>% filter(fire_id == 51) %>% st_transform(st_crs(5070))
-ggplot(fire_sf) +
- geom_sf(aes(color = mean), size=2.5) +
- scale_color_viridis_c(option = "magma") +
- theme_minimal()
+spat.eff.cbi <- inla.spde.make.A(mesh, coords_mat) %*% 
+ model_bl.cbi.sp$summary.random$mesh.idx$mean  # CBI spatial field
 
-# Save the plot
-out_png <- paste0(maindir, 'figures/INLA_WilliamsFork_SpatialEff.png')
-ggsave(out_png, dpi = 300, bg = 'white')
+# Combine into a dataframe
+spat.eff.df <- data.frame(
+ x = coords_mat[, 1],
+ y = coords_mat[, 2],
+ spat_eff_frp = as.vector(spat.eff.frp),
+ spat_eff_cbi = as.vector(spat.eff.cbi)
+)
+
+# Convert to sf object for mapping
+spat.sf <- st_as_sf(spat.eff.df, coords = c("x", "y"), crs = 4326)  # Adjust CRS if needed
+
+# Check output
+print(head(spat.sf))
 
 
 ###########################################################
