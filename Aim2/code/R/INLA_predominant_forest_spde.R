@@ -143,7 +143,7 @@ grid_tm <- grid_tm %>%
  left_join(dom_fortyp, by = "Fire_ID") %>%
  mutate(fire_fortyp = as.factor(interaction(Fire_ID, dom_fortyp)))
 head(grid_tm%>%select(Fire_ID,fortypnm_gp, dom_fortyp))
-
+rm(dom_fortyp)
 
 #===============Explore Distributions, etc.================#
 
@@ -545,32 +545,65 @@ st_write(grid_sf, paste0(maindir,"data/spatial/mod/model_grid_centroids.gpkg"),
 # fit a semivariogram to look at spatial dependence
 ###################################################
 
-# reproject to projected CRS
-sp <- grid_sf %>% st_transform(5070)
+# reproject
+sp <-  grid_sf %>%
+ st_transform(st_crs(5070))
+
 # Function to compute semivariogram for each fire
 get_fire_vario <- function(fire_id, data) {
- fire_sp <- data %>% filter(fire_id == fire_id)
+ fire_sp <- data %>% filter(fire_id == !!fire_id)
  
  if (nrow(fire_sp) > 20) {  # Only compute if there are enough points
   vario <- variogram(frp_day ~ 1, data = fire_sp)
-  vario$fire_id <- fire_id  # Keep track of which fire this is
+  vario <- vario %>% mutate(fire_id = fire_id)  # Ensure fire_id is added correctly
+  print(paste("Computed variogram for fire:", fire_id, "with", nrow(fire_sp), "points"))
   return(vario)
  } else {
+  print(paste("Skipping fire:", fire_id, "- Not enough points"))
   return(NULL)
  }
 }
+
 # Apply to each fire separately
 fires <- unique(sp$fire_id)
-vgs <- lapply(fires, get_fire_vario, data = sp)
-vgs <- do.call(rbind, variograms)  
+variograms <- lapply(fires, get_fire_vario, data = sp)
+variograms <- do.call(rbind, variograms)  # Combine results
+
+# Check if fire_id is still in the dataset
+print(unique(variograms$fire_id))
 
 # Plot variograms grouped by Fire ID
-ggplot(vgs, aes(x = dist, y = gamma, 
+ggplot(variograms, aes(x = dist, y = gamma, 
                 group = fire_id, color = fire_id)) +
- geom_line(alpha = 0.3) +  # Light transparency to see overlap
+ geom_line(alpha = 0.3, size=0.9) +  # Light transparency to see overlap
  labs(x = "Distance (meters)", y = "Semivariance", 
       title = "Semivariograms for Individual Fires") +
+ theme_minimal() +
+ theme(legend.position = "none")
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_Fire_SemiVariograms_FRP.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+# Find the approximate range (where semivariance plateaus) for each fire
+range_est <- variograms %>%
+ group_by(fire_id) %>%
+ summarize(range_m = max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE))  # 90% of max
+qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1))
+qt
+# Histogram of estimated spatial ranges
+ggplot(range_est, aes(x = range_m)) +
+ geom_histogram(bins = 20, fill = "blue", alpha = 0.6) +
+ labs(x = "Estimated Range (meters)", y = "Count",
+      title = "Distribution of Within-Fire Spatial Correlation Ranges") +
  theme_minimal()
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_Fire_EstimatedRange_FRP.png')
+ggsave(out_png, dpi=500, bg = 'white')
+
+rm(sp, range_est, variograms)
+gc()
 
 ###################################################
 ###################################################
@@ -581,17 +614,13 @@ coords_mat <- as.matrix(coords)
 # Define the spatial mesh
 mesh <- inla.mesh.2d(
  loc = coords_mat, # Locations (grid centroids)
- max.edge = c(5, 20), # Maximum edge lengths (inner and outer)
- cutoff = 0.005, # Minimum distance between points
- offset = c(1, 0.1) # Boundary buffer
+ max.edge = c(1, 5), # Maximum edge lengths (inner and outer)
+ cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
+ offset = c(0.5, 0.1) # Boundary buffer
 )
 # Plot mesh to check
 plot(mesh, main = "SPDE Mesh for FRP Model")
 points(coords, col = "red", pch = 20)
-
-# select the positions
-nmesh = mesh$n
-mesh.idx = 1:nmesh
 
 ###################################################
 # Save a spatial file of the mesh grid and vertices
@@ -698,6 +727,8 @@ model_bl.frp.sp <- inla(
 )
 summary(model_bl.frp.sp)
 
+rm(coords, coords_mat, stack.frp)
+gc()
 
 
 #=================MODEL COMPARISON=================#
