@@ -441,8 +441,6 @@ summary(model_bl.frp)
 # 2. Baseline model + temporal random effect
 # temporal effect for the first burn day
 
-# specify a pc-prior for the random effect
-hyper_pr.t <- 
 # update the model formula
 mf.frp.re <- update(
  mf.frp, . ~ . + 
