@@ -47,6 +47,8 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  # Ensure daytime FRP and CBIbc is greater than 0
  filter(
   day_count > 0, # only work with daytime FRP
+  overlap >= 0.50, # only grids with >=50% detection overlap 
+  frp_max > 0, # make sure FRP > 0
   CBIbc_p90 > 0 # and CBI 0 -> these are often boundary grids
  ) %>% 
  # create a numeric fire ID
@@ -103,12 +105,12 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  ) %>%
  # filter noise in species data
  filter(
-  # retain forested grids (>50% forest cover)
-  forest_pct >= 0.50,
-  # filter where dominance is >= 5% or abundance >= 10%
-  # removes noise from small proportions
-  ba_live_pr >= 0.01 | tpp_ld_pr >= 0.5
- ) %>%
+  # # retain forested grids (>50% forest cover)
+  # forest_pct >= 0.50,
+  # filter where dominance >5%, abundance is >1%
+  # removes noise from extremely small proportions
+  (ba_live_pr > 0.05 | tpp_ld_pr > 0.01)
+ ) %>% 
  # Group by grid and sum dead BA and TPP separately
  group_by(grid_idx) %>%
  mutate(
@@ -138,6 +140,7 @@ gc()
 glimpse(grid_tm)
 
 rm(fires)
+
 
 ###########################################
 # calculate the shannon index (H) for grids
@@ -227,7 +230,7 @@ summary(spp_coo$wt)
 # gather list of rare pairings
 rare_tr <- 10  # Threshold for rare species pairs (1% of grids)
 rare_pairs <- spp_coo %>%
- filter(n < rare_tr) %>%
+ filter(wt < 0.001) %>%
  pull(spp_pair)
 rare_pairs
 
@@ -385,11 +388,12 @@ da <- grid_tm %>%
   # create a grid-level live/dead proportion
   live_dead_pr_ba = total_ba_dead / (total_ba_live + total_ba_dead),
   live_dead_pr_tpp = total_tpp_dead / (total_tpp_live + total_tpp_dead),
+  total_tpp = total_tpp_live + total_tpp_dead,
   # center/scale metrics / fixed effects
   across(
    c(ba_live, ba_live_pr, ba_ld, ba_ld_pr, # live basal area (dominance)
      ba_dead, ba_dead_pr, # dead basal area
-     tpp_live, tpp_live_pr, tpp_ld, tpp_ld_pr, # tree/pixel (abundance)
+     tpp_live, tpp_live_pr, tpp_ld, tpp_ld_pr, total_tpp, # tree/pixel (abundance)
      tpp_dead, tpp_dead_pr, # dead TPP
      qmd_live, qmd_live_pr, qmd_ld, qmd_ld_pr, # quadratic mean diameter
      qmd_dead, qmd_dead_pr, # dead QMD
@@ -429,21 +433,24 @@ rm(grid_tm)
 gc()
 
 
+
+# make aspen presence a factor
+da$aspen <- as.factor(da$aspen)
+levels(da$aspen)
+
+
 #===========MODEL FITTING==============#
 
 set.seed(456)
 
+########################
+# FIRE RADIATIVE POWER #
+
 #################################################
 # 1. Baseline model (no random or latent effects)
 
-da$aspen <- as.factor(da$aspen)
-levels(da$aspen)
-
-#######
-# FRP #
-
 # setup the model formula
-mf.frp <- log_frp_max_day ~ 1 + 
+mf.frp <- log_frp_csum_day ~ 1 + 
  fortypnm_gp:H_tpp + # species diversity (abundance) by predominant forest type
  species_gp_n:ba_live_pr + # species proportion of live basal area
  species_gp_n:qmd_live + # species-level live quadratic mean diameter
@@ -451,8 +458,10 @@ mf.frp <- log_frp_max_day ~ 1 +
  live_dead_pr_tpp + # grid-level proportion dead TPP
  canopypct + # grid-level canopy percent
  erc_dv + vpd + vs + # day-of-burn climate/weather
- slope + tpi + chili + # grid-level topography 
- day_prop + # grid-level proportion of daytime observations
+ elev + slope + tpi + chili + # grid-level topography 
+ overlap + # grid-level VIIRS overlap (sum)
+ day_prop + # grid-level proportion of daytime detections 
+ afd_count + # grid-level number of contributing detections
  aspen # fire-level aspen presence
 # fit the model
 ml.frp <- inla(
@@ -461,8 +470,12 @@ ml.frp <- inla(
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.1))
- )
+  prec = list(prior = "pc.prec", param = c(1, 0.01))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
 )
 summary(ml.frp)
 # check on predictive power of the random effects models
@@ -477,7 +490,7 @@ mf.frp.re <- update(
  mf.frp, . ~ 1 + . + 
   f(first_obs_date, model = "iid", 
     hyper = list(
-     prec = list(prior = "pc.prec", param = c(1, 0.5))
+     prec = list(prior = "pc.prec", param = c(0.5, 0.01))
     )) # temporal random effect
 )
 # fit the model
@@ -487,10 +500,16 @@ ml.frp.re <- inla(
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.1))
- )
+  prec = list(prior = "pc.prec", param = c(1, 0.01))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
 )
 summary(ml.frp.re)
+# check on predictive power of the random effects models
+mean(ml.frp.re$cpo$cpo, na.rm = TRUE)
 
 
 ###################################################
@@ -501,7 +520,7 @@ mf.frp.re2 <- update(
  mf.frp.re, . ~ 1 + . + 
   f(fire_id, model = "iid", 
     hyper = list(
-     prec = list(prior = "pc.prec", param = c(1, 0.5))
+     prec = list(prior = "pc.prec", param = c(0.5, 0.01))
     )) # fire-level random effect
 )
 # fit the model
@@ -511,25 +530,97 @@ ml.frp.re2 <- inla(
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.1))
- )
+  prec = list(prior = "pc.prec", param = c(1, 0.01))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
 )
 summary(ml.frp.re2)
+# check on predictive power of the random effects models
+mean(ml.frp.re2$cpo$cpo, na.rm = TRUE)
 
 gc()
 
 
+# ##################################################################
+# # 4. Baseline + Temporal + Fire-level + Species-pair latent effect
+# # requires building a precision matrix using species pairs
+# # weighted by the observed co-occurrence frequency
+# 
+# # gather unique species pairs
+# spp_pairs <- unique(da$spp_pair)
+# n_pairs <- length(spp_pairs)
+# # build the precision matrix
+# prec_mat <- Matrix(0, nrow = n_pairs, ncol = n_pairs, sparse = TRUE)
+# rownames(prec_mat) <- spp_pairs
+# colnames(prec_mat) <- spp_pairs
+# # populate diagonal with weights
+# # appropriate for balancing rare/common pairings
+# for (pair in spp_pairs) {
+#  wt_norm <- mean(da$wt_norm[da$spp_pair == pair])  # Use mean weight for each spp_pair
+#  prec_mat[pair, pair] <- wt_norm
+# }
+# # check positive-definiteness
+# if (!all(eigen(prec_mat)$values > 0)) {
+#  diag(prec_mat) <- diag(prec_mat) + 1e-4  # Add a small constant to diagonals
+# }
+# # ensure symmetry and positive-definiteness
+# prec_mat <- Matrix::nearPD(prec_mat, corr = FALSE)$mat
+# # match spp_pair levels in 'da' to precision matrix
+# da$spp_pair <- factor(da$spp_pair, levels = rownames(prec_mat))
+# # Verify alignment
+# stopifnot(all(levels(da$spp_pair) %in% rownames(prec_mat)))
+# stopifnot(all(rownames(prec_mat) %in% levels(da$spp_pair)))
+# # Verify positive semi-definiteness
+# isSymmetric(prec_mat)  # Should return TRUE
+# all(eigen(prec_mat)$values > 0)  # Should return TRUE
+# # Verify factor dimensions
+# nrow(prec_mat) == length(unique(da$spp_pair))  # Should return TRUE
+# 
+# 
+# ##########################
+# # update the model formula 
+# mf.frp.re2.spp <- update(
+#  mf.frp.re2, 
+#  . ~ 1 + . + 
+#  f(spp_pair, model = "generic0", Cmatrix = prec_mat,
+#    values = levels(da$spp_pair),
+#    hyper = list(
+#     prec = list(prior = "pc.prec", param = c(1, 0.01))
+#    ))
+# )
+# 
+# # fit the model
+# ml.frp.re.spp <- inla(
+#  mf.frp.re2.spp, data = da,
+#  family = "gaussian",
+#  control.predictor = list(compute=T),
+#  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+#  control.fixed = list(
+#   prec = list(prior = "pc.prec", param = c(1, 0.5))
+#  ) 
+# )
+# summary(ml.frp.re.spp)
+# 
+# # check on predictive power of the random effects models
+# mean(ml.frp.re2$cpo$cpo, na.rm = TRUE)
+# mean(ml.frp.re.spp$cpo$cpo, na.rm = TRUE)
+# 
+# rm(prec_mat)
+# gc()
+
+
 #######################
-# 5. Spatial SPDE model
+# 4. Spatial SPDE model
 
 # extracting spatial coordinates for grid centroids
 grid_sf <- da %>%
  arrange(grid_index) %>%
- # distinct(grid_index, x, y, .keep_all = TRUE) %>%
  st_as_sf(., coords = c("x", "y"), crs = 4326)
 # extract coordinates
 coords <- grid_sf %>% st_coordinates(.)
-
 # convert coordinates to a matrix for INLA
 coords_mat <- as.matrix(coords) 
 
@@ -556,7 +647,7 @@ spde.ml <- inla.spde2.pcmatern(
  # P(practic.range < 0.3) = 0.5
  prior.range = c(0.1, 0.5),
  # P(sigma > 1) = 0.01
- prior.sigma = c(1, 0.1) # variance
+ prior.sigma = c(0.5, 0.01) # variance
 )
 
 # Compute the projector matrix (A)
@@ -574,17 +665,17 @@ str(field.idx)
 
 # Extract the predictor variables
 X <- da %>% 
- select(fire_id, first_obs_date, 
-        fortypnm_gp, species_gp_n,        
-        canopypct, H_tpp, ba_live_pr, qmd_live, 
-        tree_ht_live, live_dead_pr_tpp,
-        erc_dv, vpd, vs, slope, tpi, chili, 
-        aspen, day_prop)
+ select(fire_id, first_obs_date, grid_index, spp_pair,
+        fortypnm_gp, species_gp_n, total_tpp, forest_pct,      
+        canopypct, H_tpp, H_ba, ba_live_pr, tpp_live_pr, qmd_live, 
+        tree_ht_live, live_dead_pr_tpp, live_dead_pr_ba,
+        erc_dv, vpd, vs, slope, tpi, chili, elev,
+        aspen, day_prop, afd_count, overlap)
 head(X)
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
- data = list(log_frp_max_day = da$log_frp_max_day),
+ data = list(log_frp_csum_day = da$log_frp_csum_day),
  A = list(A, 1),  
  tag = 'est',
  effects = list(
@@ -611,10 +702,16 @@ ml.frp.re.sp <- inla(
  control.predictor = list(A = inla.stack.A(stack.frp), compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
  control.fixed = list(
-  prec = list(prior = "pc.prec", param = c(1, 0.1))
- )
+  prec = list(prior = "pc.prec", param = c(1, 0.01))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
 )
 summary(ml.frp.re.sp)
+mean(ml.frp.re.sp$cpo$cpo, na.rm = TRUE)
+
 
 
 #==========EXTRACTING THE SPATIAL EFFECT===========#
@@ -641,7 +738,7 @@ spat.eff.frp <- data.frame(
  lower = as.vector(lower),  # 2.5% quantile
  upper = as.vector(upper),  # 97.5% quantile
  uncertainty = as.vector(uncertainty),  # CI width
- response = "CBI"
+ response = "FRP"
 ) %>%
  distinct(x, y, .keep_all=T) %>%
  st_as_sf(., coords = c("x", "y"), crs = 4326)
@@ -700,7 +797,7 @@ print(ml_comparison.frp)
 
 
 # tidy up !
-rm(A, coords, coords_mat, field.idx, mesh, 
+rm(A, coords_mat, field.idx, mesh, 
    ml.frp, ml.frp.re, ml.frp.re2, spde.ml, stack.frp)
 gc()
 
@@ -714,17 +811,17 @@ gc()
 # Extract fixed effect marginals
 frp_marginals <- ml.frp.re.sp$marginals.fixed
 # Tidy marginals for all fixed effects
-tidy.effects <- tibble::tibble(
+tidy.effects.frp <- tibble::tibble(
  parameter = names(frp_marginals),
  data = purrr::map(frp_marginals, ~ as.data.frame(.x))
 ) %>%
  unnest(data) %>%
- filter(!parameter %in% c("(Intercept)","aspen1","day_prop")) %>%  # Exclude the intercept
+ filter(!parameter %in% c("(Intercept)","aspen","day_prop")) %>%  # Exclude the intercept
  mutate(
   effect = case_when(
-   str_detect(parameter, "ba_live_pr") ~ "Prop. Live Basal Area",
-   str_detect(parameter, "qmd_live") ~ "Quadratic Mean Diameter",
-   str_detect(parameter, "H_tpp") ~ "Shannon Index (TPP-based)",
+   str_detect(parameter, "ba_live_pr") ~ "Proportion of \nLive Basal Area",
+   str_detect(parameter, "qmd_live") ~ "Quadratic\nMean Diameter",
+   str_detect(parameter, "H_tpp") ~ "Shannon Index\n(Abundance-based)",
    str_detect(parameter, "tree_ht_live") ~ "Tree height (m)",
    TRUE ~ parameter  # Default for all other fixed effects
   ),
@@ -739,14 +836,14 @@ tidy.effects <- tibble::tibble(
  group_by(effect) %>%
  mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
  ungroup() 
-tidy.effects <- tidy.effects %>%
+tidy.effects.frp <- tidy.effects.frp %>%
  # Order effects: Species-specific effects first, global effects by mean effect size
  mutate(
   effect_order = case_when(
    !is.na(species) ~ 2,  # Species-specific effects
    TRUE ~ 2              # Global effects
   ),
-  effect = factor(effect, levels = tidy.effects %>%
+  effect = factor(effect, levels = tidy.effects.frp %>%
                    arrange(effect_order, desc(mean_effect)) %>%
                    pull(effect) %>%
                    unique()),
@@ -754,13 +851,16 @@ tidy.effects <- tidy.effects %>%
  )
 
 # check on the species name extraction
-unique(tidy.effects$fill_species)
-spps_breaks <- unique(tidy.effects$fill_species)
+unique(tidy.effects.frp$fill_species)
+spps_breaks <- unique(tidy.effects.frp$fill_species)
 
 
 #######################
 # create the ridge plot
-ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
+frp.p1 <- tidy.effects.frp %>%
+ filter(!parameter %in% c("(Intercept)", "aspen1", "overlap", "day_prop", "afd_count"),
+        !str_starts(parameter, "fortyp")) %>%
+ ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
@@ -789,17 +889,20 @@ ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
   axis.text.y = element_text(size = 10),
   axis.title.y = element_text(size = 12)
  )
+frp.p1
 
 # Save the plot
 out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_full.png')
 ggsave(out_png, dpi = 500, bg = 'white')
 
+
 ####################################
 # plot with just the species metrics
-tidy.effects %>%
+frp.p2 <- tidy.effects.frp %>%
  filter(fill_species != "Global Effect") %>%
  ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
- geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_density_ridges(
+  stat = "identity", scale = 1.5, alpha = 0.7, show.legend=F) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
   x = "Effect Size",
@@ -819,62 +922,342 @@ tidy.effects %>%
   breaks = spps_breaks,  
   guide = guide_legend(title = "Species")
  ) +
+ xlim(-0.12, 0.14) +
  theme_minimal() +
  theme(
-  legend.title = element_text(size = 12),
-  legend.text = element_text(size = 11),
-  axis.text = element_text(size = 11),
-  axis.title = element_text(size = 12)
+  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+  axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+  axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+  legend.position = c(0.85, 0.70),
+  legend.background = element_rect(
+   fill = scales::alpha("white", 0.6), 
+   color = NA, size = 1),
+  legend.title = element_text(size = 9),
+  legend.text = element_text(size = 8)
  )
+frp.p2
 
 # Save the plot
-out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_species.png')
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP_species.png')
 ggsave(out_png, dpi = 500, bg = 'white')
+# 
+# # Tidy up!
+# rm(frp_marginals, tidy.effects)
+# gc()
+
+
+
+
+########################
+# COMPOSITE BURN INDEX #
+
+
+#######################################
+# 1. Baseline model (no latent effects)
+
+# setup the model formula
+mf.cbi <- CBIbc_p90 ~ 1 + 
+ fortypnm_gp:H_tpp + # species diversity (abundance) by predominant forest type
+ species_gp_n:ba_live_pr + # species proportion of live basal area
+ species_gp_n:qmd_live + # species-level live quadratic mean diameter
+ species_gp_n:tree_ht_live + # species-level live tree height
+ live_dead_pr_tpp + # grid-level proportion dead TPP
+ canopypct + # grid-level canopy percent
+ erc_dv + vpd + vs + # day-of-burn climate/weather
+ elev + slope + tpi + chili + # grid-level topography 
+ aspen # fire-level aspen presence
+# fit the model
+ml.cbi <- inla(
+ mf.cbi, data = da,
+ family = "gamma",
+ control.predictor = list(compute=T),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "loggamma", param = c(0.5, 0.1))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
+)
+summary(ml.cbi)
+# check on predictive power of the random effects models
+mean(ml.cbi$cpo$cpo, na.rm = TRUE)
+
+
+##############################################
+# 2. Baseline model + temporal random effect
+
+# update the model formula
+mf.cbi.re <- update(
+ mf.cbi, . ~ 1 + . + 
+  f(first_obs_date, model = "iid", 
+    hyper = list(prec = list(prior = "pc.prec", param = c(0.5, 0.01)))
+  ) # temporal random effect
+)
+# fit the model                     
+ml.cbi.re <- inla(
+ mf.cbi.re, data = da, 
+ family = "gamma",
+ control.predictor = list(compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "loggamma", param = c(0.5, 0.1))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
+)
+summary(ml.cbi.re)
+# check on predictive power of the random effects models
+mean(ml.cbi.re$cpo$cpo, na.rm = TRUE)
+
+
+#######################################################################
+# 3. Baseline model + temporal random effect + fire-level random effect 
+
+# update the model formula
+mf.cbi.re2 <- update(
+ mf.cbi.re, . ~ 1 + . + 
+  f(fire_id, model = "iid", 
+    hyper = list(prec = list(prior = "pc.prec", param = c(0.5, 0.01)))
+  ) # fire-level random effect
+)
+# fit the model                     
+ml.cbi.re2 <- inla(
+ mf.cbi.re2, data = da, 
+ family = "gamma",
+ control.predictor = list(compute = TRUE),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ control.fixed = list(
+  prec = list(prior = "loggamma", param = c(0.5, 0.1))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
+)
+summary(ml.cbi.re2)
+# check on predictive power of the random effects models
+mean(ml.cbi.re2$cpo$cpo, na.rm = TRUE)
+
+
+#######################
+# 4. Spatial SPDE model
+
+# extracting spatial coordinates for grid centroids
+grid_sf <- da %>%
+ arrange(grid_index) %>%
+ st_as_sf(., coords = c("x", "y"), crs = 4326)
+# extract coordinates
+coords <- grid_sf %>% st_coordinates(.)
+# convert coordinates to a matrix for INLA
+coords_mat <- as.matrix(coords) 
+
+# Define the spatial mesh
+mesh <- inla.mesh.2d(
+ loc = coords_mat, # Locations (grid centroids)
+ max.edge = c(1, 20), # Maximum edge lengths (inner and outer)
+ cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
+ offset = c(0.5, 0.1) # Boundary buffer
+)
+# Plot mesh to check
+plot(mesh)
+points(coords, col = "red", pch = 20)
+
+rm(coords)
+gc()
+
+######################
+# Build the SPDE model
+spde.ml <- inla.spde2.pcmatern(
+ # Mesh and smoothness parameter
+ mesh = mesh, 
+ alpha = 2,
+ # P(practic.range < 0.3) = 0.5
+ prior.range = c(0.1, 0.5),
+ # P(sigma > 1) = 0.01
+ prior.sigma = c(1, 0.01) # variance
+)
+
+# Compute the projector matrix (A)
+A <- inla.spde.make.A(
+ mesh = mesh,
+ loc = coords_mat
+)
+
+# Assign the spatial index
+field.idx <- inla.spde.make.index(
+ name = "mesh.idx",
+ n.spde = spde.ml$n.spde
+)
+str(field.idx)
+
+# Extract the predictor variables
+X <- da %>% 
+ select(fire_id, first_obs_date, grid_index, spp_pair,
+        fortypnm_gp, species_gp_n, total_tpp, forest_pct,      
+        canopypct, H_tpp, H_ba, ba_live_pr, tpp_live_pr, qmd_live, 
+        tree_ht_live, live_dead_pr_tpp, live_dead_pr_ba,
+        erc_dv, vpd, vs, slope, tpi, chili, elev,
+        aspen, day_prop)
+head(X)
+
+# Create the INLA data stack
+stack.cbi <- inla.stack(
+ data = list(CBIbc_p90 = da$CBIbc_p90),
+ A = list(A, 1),  
+ tag = 'est',
+ effects = list(
+  c(field.idx),
+  list(as.data.frame(X))
+ )
+)
+dim(inla.stack.A(stack.cbi))
+
+rm(grid_sf, X)
+gc()
+
+##########################
+# update the model formula
+mf.cbi.re.sp <- update(
+ mf.cbi.re2, . ~ 1 + . + 
+  f(mesh.idx, model = spde.ml) # spatial process model
+)
+# fit the model
+ml.cbi.re.sp <- inla(
+ mf.cbi.re.sp, 
+ data = inla.stack.data(stack.cbi), ,
+ family = "gamma",
+ control.predictor = list(A = inla.stack.A(stack.cbi), compute=T),
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+ control.fixed = list(
+  prec = list(prior = "loggamma", param = c(0.5, 0.1))
+ ),
+ control.family = list(
+  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+ ),
+ control.inla = list(strategy = "adaptive", int.strategy = "grid")
+)
+summary(ml.cbi.re.sp)
+
+# check on predictive power of the random effects models
+mean(ml.cbi.re.sp$cpo$cpo, na.rm = TRUE)
+
+
+
+#==========EXTRACTING THE SPATIAL EFFECT===========#
+
+# Compute spatial effect for each grid location
+# mean
+spat.eff <- inla.spde.make.A(mesh, coords_mat) %*% 
+ ml.cbi.re.sp$summary.random$mesh.idx$mean  # FRP spatial field
+# credible intervals
+# Compute 2.5% (lower bound) credible interval
+lower <- inla.spde.make.A(mesh, coords_mat) %*% 
+ ml.cbi.re.sp$summary.random$mesh.idx$`0.025quant`
+# Compute 97.5% (upper bound) credible interval
+upper <- inla.spde.make.A(mesh, coords_mat) %*% 
+ ml.cbi.re.sp$summary.random$mesh.idx$`0.975quant`
+# Compute uncertainty as the credible interval width (upper - lower)
+uncertainty <- upper - lower
+
+# convert to a spatial dataframe
+spat.eff.cbi <- data.frame(
+ x = coords_mat[, 1],  # Longitude
+ y = coords_mat[, 2],  # Latitude
+ spat_effect = as.vector(spat.eff),  # Convert matrix to vector
+ lower = as.vector(lower),  # 2.5% quantile
+ upper = as.vector(upper),  # 97.5% quantile
+ uncertainty = as.vector(uncertainty),  # CI width
+ response = "CBI"
+) %>%
+ distinct(x, y, .keep_all=T) %>%
+ st_as_sf(., coords = c("x", "y"), crs = 4326)
+glimpse(spat.eff.cbi)
+
+# write this a spatial file
+st_write(spat.eff.cbi, paste0(maindir,"data/spatial/mod/spatial_effect_CBI_spp.gpkg"), append=F)
 
 # Tidy up!
-rm(frp_marginals, tidy.effects)
+rm(spat.eff, lower, upper, uncertainty)
 gc()
 
 
 
+#=================MODEL COMPARISON=================#
+
+# Create a model comparison table
+ml_comparison.cbi <- tibble(
+ Model = c("Baseline", 
+           "W/Fire Random Effect", 
+           "W/Fire + Temporal Effect",
+           "W/Fire + Temporal + Spatial Effect"),
+ Response = "CBI",
+ DIC = c(
+  ml.cbi$dic$dic,
+  ml.cbi.re$dic$dic,
+  ml.cbi.re2$dic$dic,
+  ml.cbi.re.sp$dic$dic
+ ),
+ WAIC = c(
+  ml.cbi$waic$waic,
+  ml.cbi.re$waic$waic,
+  ml.cbi.re2$waic$waic,
+  ml.cbi.re.sp$waic$waic
+ ),
+ Marginal_LogLikelihood = c(
+  ml.cbi$mlik[1],
+  ml.cbi.re$mlik[1],
+  ml.cbi.re2$mlik[1],
+  ml.cbi.re.sp$mlik[1]
+ ),
+ Effective_Params = c(
+  ml.cbi$dic$p.eff,
+  ml.cbi.re$dic$p.eff,
+  ml.cbi.re2$dic$p.eff,
+  ml.cbi.re.sp$dic$p.eff
+ ),
+ Mean_CPO = c(
+  mean(ml.cbi$cpo$cpo, na.rm = TRUE),
+  mean(ml.cbi.re$cpo$cpo, na.rm = TRUE),
+  mean(ml.cbi.re2$cpo$cpo, na.rm = TRUE),
+  mean(ml.cbi.re.sp$cpo$cpo, na.rm = TRUE)
+ )
+) %>% arrange(DIC)
+# Print the comparison table
+print(ml_comparison.cbi)
+
+
+# tidy up !
+rm(A, coords_mat, field.idx, mesh, 
+   ml.cbi, ml.cbi.re, ml.cbi.re2, spde.ml, stack.cbi)
+gc()
 
 
 
-
-
-#####################
-# Fit a model for CBI
-# define a new model formula
-mf.cbi.re.sp <- update(mf.frp.re.sp, CBIbc_p90 ~ 1 + .)
-
-# fit the model
-model_tm.cbi.re <- inla(
- mf.cbi.re.sp, data = da,
- family = "gaussian",
- control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(prec = 0.01)  # Penalize high precision
-)
-summary(model_tm.cbi.re)
+#===========POSTERIOR EFFECTS===========#
 
 
 #########################################
 # Plot all of the posterior fixed effects
 # Extract fixed effect marginals
-cbi_marginals <- model_tm.cbi.re$marginals.fixed
+cbi_marginals <- ml.cbi.re.sp$marginals.fixed
 # Tidy marginals for all fixed effects
-tidy.effects <- tibble::tibble(
+tidy.effects.cbi <- tibble::tibble(
  parameter = names(cbi_marginals),
  data = purrr::map(cbi_marginals, ~ as.data.frame(.x))
 ) %>%
  unnest(data) %>%
- filter(parameter != "(Intercept)") %>%  # Exclude the intercept
+ filter(!parameter %in% c("(Intercept)","aspen","day_prop")) %>%  # Exclude the intercept
  mutate(
   effect = case_when(
-   str_detect(parameter, "ba_live_pr") ~ "Prop. Live BA",
-   str_detect(parameter, "qmd_live") ~ "Mean. Live QMD",
-   str_detect(parameter, "H_tpp") ~ "H (TPP)",
-   str_detect(parameter, "forest_pct") ~ "Forest %",
+   str_detect(parameter, "ba_live_pr") ~ "Proportion of \nLive Basal Area",
+   str_detect(parameter, "qmd_live") ~ "Quadratic\nMean Diameter",
+   str_detect(parameter, "H_tpp") ~ "Shannon Index\n(Abundance-based)",
+   str_detect(parameter, "tree_ht_live") ~ "Tree height (m)",
    TRUE ~ parameter  # Default for all other fixed effects
   ),
   # Extract species names from parameters
@@ -888,15 +1271,14 @@ tidy.effects <- tibble::tibble(
  group_by(effect) %>%
  mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
  ungroup() 
-
-tidy.effects <- tidy.effects %>%
+tidy.effects.cbi <- tidy.effects.cbi %>%
  # Order effects: Species-specific effects first, global effects by mean effect size
  mutate(
   effect_order = case_when(
    !is.na(species) ~ 2,  # Species-specific effects
    TRUE ~ 2              # Global effects
   ),
-  effect = factor(effect, levels = tidy.effects %>%
+  effect = factor(effect, levels = tidy.effects.cbi %>%
                    arrange(effect_order, desc(mean_effect)) %>%
                    pull(effect) %>%
                    unique()),
@@ -904,10 +1286,16 @@ tidy.effects <- tidy.effects %>%
  )
 
 # check on the species name extraction
-unique(tidy.effects$species)
+unique(tidy.effects$fill_species)
+spps_breaks <- unique(tidy.effects$fill_species)
 
+
+#######################
 # create the ridge plot
-ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
+cbi.p1 <- tidy.effects.cbi %>%
+ filter(!parameter %in% c("aspen1"),
+        !str_starts(parameter, "fortyp")) %>%
+ ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
@@ -918,7 +1306,7 @@ ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
  scale_fill_manual(
   values = c(
    "Global Effect" = "gray",  # Neutral color for global effects
-   "aspen" = "#1b9e77",
+   "quaking_aspen" = "#1b9e77",
    "lodgepole" = "#d95f02",
    "mixed_conifer" = "#7570b3",
    "piñon_juniper" = "#e7298a",
@@ -926,7 +1314,7 @@ ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
    "spruce_fir" = "#e6ab02"
   ),
   # Exclude "Global Effect" from the legend
-  breaks = c("aspen", "lodgepole", "mixed_conifer", "piñon_juniper", "ponderosa", "spruce_fir"),  
+  breaks = spps_breaks,  
   guide = guide_legend(title = "Species")
  ) +
  theme_minimal() +
@@ -936,72 +1324,71 @@ ggplot(tidy.effects, aes(x = x, y = effect, height = y, fill = fill_species)) +
   axis.text.y = element_text(size = 10),
   axis.title.y = element_text(size = 12)
  )
-
+cbi.p1
 # Save the plot
-out_png <- paste0(maindir, 'figures/INLA_Spp_COO_FixedEffects-CBI.png')
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_CBI_full.png')
 ggsave(out_png, dpi = 500, bg = 'white')
 
-# Tidy up!
-rm(cbi_marginals, tidy.effects)
-gc()
 
-
-#########################################################
-# Extract posterior summaries for spp_pair latent effects
-
-# create a lookup table for the species pair names
-pair_lookup <- data.frame(
- spp_pair_id = seq_along(levels(da$spp_pair)),  # Numeric indices
- spp_pair_name = levels(da$spp_pair)  # Original species pair names
-)
-
-# Extract the posterior distribution of effects
-spp_pair_effects <- as.data.frame(model_tm.cbi.re$summary.random$spp_pair)
-spp_pair_effects$spp_pair_id <- as.numeric(rownames(spp_pair_effects))
-
-# Add confidence intervals and significance
-spp_pair_effects <- spp_pair_effects %>%
- mutate(
-  lower_ci = `0.025quant`,
-  upper_ci = `0.975quant`,
-  significant = (lower_ci > 0 | upper_ci < 0),  # Significant if CI does not overlap 0
-  spp_pair = rownames(spp_pair_effects)  # Extract spp_pair names
- ) %>%
- arrange(mean) %>%
- filter(significant) %>% # keep significant pairs
- left_join(pair_lookup, by="spp_pair_id") %>%
- mutate(spp_pair_name = factor(spp_pair_name, levels = spp_pair_name[order(mean)]))
-
-# Create the plot
-ggplot(spp_pair_effects, aes(x = mean, y = spp_pair_name, fill = mean > 0)) +
- geom_col(
-  aes(x = mean), 
-  position = "identity",
-  width = 0.8,
-  alpha = 0.7
- ) +
- geom_point(aes(x = mean), color = "black", size = 2) +
- geom_errorbarh(aes(xmin = `0.025quant`, xmax = `0.975quant`), height = 0.2, color = "black") +
- scale_fill_manual(values = c("TRUE" = "coral", "FALSE" = "skyblue"), guide = "none") +
+####################################
+# plot with just the species metrics
+cbi.p2 <- tidy.effects.cbi %>%
+ filter(fill_species != "Global Effect") %>%
+ ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
+ geom_density_ridges(
+  stat = "identity", scale = 1.5,
+  alpha = 0.7,
+  show.legend=T) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
-  x = "Effect Size (Mean ± 95% CI)",
-  y = "Species Pair",
+  x = "Effect Size",
+  y = "Fixed Effect",
+  fill = "Species"
  ) +
+ scale_fill_manual(
+  values = c(
+   "quaking_aspen" = "#1b9e77",
+   "lodgepole" = "#d95f02",
+   "mixed_conifer" = "#7570b3",
+   "piñon_juniper" = "#e7298a",
+   "ponderosa" = "#66a61e",
+   "spruce_fir" = "#e6ab02"
+  ),
+  # Exclude "Global Effect" from the legend
+  breaks = spps_breaks,  
+  guide = guide_legend(title = "Species")
+ ) +
+ coord_cartesian(xlim=c(-0.12,0.14)) +
  theme_minimal() +
  theme(
-  legend.position = "none",
-  axis.text.y = element_text(size = 8),
-  axis.text.x = element_text(size = 10),
-  axis.title = element_text(size = 12)
+  axis.text.y = element_text(angle = 0, hjust = 1, size=10),
+  axis.text.x = element_text(angle = 0, hjust = 0, size=10),
+  axis.title.y = element_text(size = 11, margin = margin(r = 12)),
+  axis.title.x = element_text(size = 11, margin = margin(t = 12)),
+  legend.position = c(0.90, 0.68),
+  legend.background = element_rect(
+   fill = scales::alpha("white", 0.6), 
+   color = NA, size = 1),
+  legend.title = element_text(size = 11),
+  legend.text = element_text(size = 10)
  )
+cbi.p2
 
 # Save the plot
-out_png <- paste0(maindir, 'figures/INLA_Spp_COO_LatentEffects-CBI.png')
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_CBI_species.png')
 ggsave(out_png, dpi = 500, bg = 'white')
+# 
+# # Tidy up!
+# rm(cbi_marginals, tidy.effects)
+# gc()
 
-rm(spp_pair_effects, pair_lookup)
-gc()
 
+# Make a combined figure (FRP and CBI)
+# Load the two ridge plots (assuming they are `frp_plot` and `cbi_plot`)
+frp.cbi.p3 <- frp.p2 / cbi.p2 # "/" stacks them, "|" would place them side-by-side
+frp.cbi.p3
 
-
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP-CBI_species.png')
+ggsave(out_png, dpi = 500, bg = 'white')
 
