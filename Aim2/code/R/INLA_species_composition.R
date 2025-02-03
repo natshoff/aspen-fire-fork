@@ -1283,11 +1283,20 @@ tidy.effects.cbi <- tidy.effects.cbi %>%
                    pull(effect) %>%
                    unique()),
   fill_species = ifelse(is.na(species), "Global Effect", species)
- )
+ ) %>%
+ mutate(fill_species = recode(
+  fill_species,
+  "quaking_aspen" = "Quaking aspen",
+  "lodgepole" = "Lodgepole",
+  "mixed_conifer" = "Mixed-conifer",
+  "piñon_juniper" = "Piñon-juniper",
+  "ponderosa" = "Ponderosa",
+  "spruce_fir" = "Spruce-fir"
+ ))
 
 # check on the species name extraction
-unique(tidy.effects$fill_species)
-spps_breaks <- unique(tidy.effects$fill_species)
+unique(tidy.effects.cbi$fill_species)
+spps_breaks <- unique(tidy.effects.cbi$fill_species)
 
 
 #######################
@@ -1306,12 +1315,12 @@ cbi.p1 <- tidy.effects.cbi %>%
  scale_fill_manual(
   values = c(
    "Global Effect" = "gray",  # Neutral color for global effects
-   "quaking_aspen" = "#1b9e77",
-   "lodgepole" = "#d95f02",
-   "mixed_conifer" = "#7570b3",
-   "piñon_juniper" = "#e7298a",
-   "ponderosa" = "#66a61e",
-   "spruce_fir" = "#e6ab02"
+   "Quaking aspen" = "#1b9e77",
+   "Lodgepole" = "#d95f02",
+   "Mixed-conifer" = "#7570b3",
+   "Piñon-juniper" = "#e7298a",
+   "Ponderosa" = "#66a61e",
+   "Spruce-fir" = "#e6ab02"
   ),
   # Exclude "Global Effect" from the legend
   breaks = spps_breaks,  
@@ -1347,12 +1356,12 @@ cbi.p2 <- tidy.effects.cbi %>%
  ) +
  scale_fill_manual(
   values = c(
-   "quaking_aspen" = "#1b9e77",
-   "lodgepole" = "#d95f02",
-   "mixed_conifer" = "#7570b3",
-   "piñon_juniper" = "#e7298a",
-   "ponderosa" = "#66a61e",
-   "spruce_fir" = "#e6ab02"
+   "Quaking aspen" = "#1b9e77",
+   "Lodgepole" = "#d95f02",
+   "Mixed-conifer" = "#7570b3",
+   "Piñon-juniper" = "#e7298a",
+   "Ponderosa" = "#66a61e",
+   "Spruce-fir" = "#e6ab02"
   ),
   # Exclude "Global Effect" from the legend
   breaks = spps_breaks,  
@@ -1361,16 +1370,16 @@ cbi.p2 <- tidy.effects.cbi %>%
  coord_cartesian(xlim=c(-0.12,0.14)) +
  theme_minimal() +
  theme(
-  axis.text.y = element_text(angle = 0, hjust = 1, size=10),
-  axis.text.x = element_text(angle = 0, hjust = 0, size=10),
-  axis.title.y = element_text(size = 11, margin = margin(r = 12)),
-  axis.title.x = element_text(size = 11, margin = margin(t = 12)),
+  axis.text.y = element_text(angle = 0, hjust = 1, size=11),
+  axis.text.x = element_text(angle = 0, hjust = 0, size=11),
+  axis.title.y = element_text(size = 12, margin = margin(r = 12)),
+  axis.title.x = element_text(size = 12, margin = margin(t = 12)),
   legend.position = c(0.90, 0.68),
   legend.background = element_rect(
    fill = scales::alpha("white", 0.6), 
    color = NA, size = 1),
-  legend.title = element_text(size = 11),
-  legend.text = element_text(size = 10)
+  legend.title = element_text(size = 12),
+  legend.text = element_text(size = 11)
  )
 cbi.p2
 
