@@ -91,14 +91,14 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   # proportion of contributing AFD during daytime observations
   day_prop = day_count / afd_count,
   # log-scaled response variables
-  log_frp_max = log(frp_max + 1e-5),
-  log_frp_csum = log(frp_csum + 1e-5),
-  log_frp_max_day = log(frp_max_day + 1e-5),
-  log_frp_max_night = log(frp_max_night + 1e-5),
-  log_frp_csum_day = log(frp_csum_day + 1e-5),
-  log_frp_csum_night = log(frp_csum_night + 1e-5),
-  log_frp_p90 = log(frp_p90_day + 1e-5),
-  log_frp_p95 = log(frp_p95_day + 1e-5),
+  log_frp_max = log(frp_max + 1),
+  log_frp_csum = log(frp_csum + 1),
+  log_frp_max_day = log(frp_max_day + 1),
+  log_frp_max_night = log(frp_max_night + 1),
+  log_frp_csum_day = log(frp_csum_day + 1),
+  log_frp_csum_night = log(frp_csum_night + 1),
+  log_frp_p90 = log(frp_p90_day + 1),
+  log_frp_p95 = log(frp_p95_day + 1),
   # scale the percentages
   forest_pct = forest_pct / 100,
   fire_aspenpct = fire_aspenpct / 100
@@ -109,7 +109,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   # forest_pct >= 0.50,
   # filter where dominance >5%, abundance is >1%
   # removes noise from extremely small proportions
-  (ba_live_pr > 0.05 | tpp_ld_pr > 0.01)
+  (ba_live_pr > 0.1 | tpp_ld_pr > 0.1)
  ) %>% 
  # Group by grid and sum dead BA and TPP separately
  group_by(grid_idx) %>%
@@ -176,82 +176,7 @@ aspen_pr <- grid_tm %>%
  select(grid_idx, aspen_ba_pr, aspen_tpp_pr)
 head(aspen_pr)
 
-
-###########################################################
-# Identify top two species by live basal area for each grid
-# calculate the proportion of grids with that spp_pair
-# the observed co-occurrence distribution...
-top_spps <- grid_tm %>%
- mutate(species_gp_n = as.character(species_gp_n)) %>%
- group_by(grid_idx) %>%
- arrange(desc(ba_live_pr)) %>% # Sort by abundance or dominance
- slice_head(n = 2) %>% # select the top 2 species
- summarise(
-  spp_1 = first(species_gp_n), # Most dominant species
-  spp_2 = nth(species_gp_n, 2, default = first(species_gp_n))  # Second most dominant species
- ) %>%
- mutate(
-  spp_2 = ifelse(is.na(spp_2), spp_1, spp_2),  # Handle pure stands by filling spp_2 with spp_1
-  spp_pair = if_else(
-   spp_1 == spp_2,
-   paste0(spp_1, ".pure"),  # Label pure stands
-   paste(spp_1, spp_2, sep = ".")  # Label mixed stands
-  )
- ) %>%
- select(-c(spp_1,spp_2))
-head(top_spps)
-
-# Summarize unique spp pairs
-n_grids <- length(unique(grid_tm$grid_idx))
-spp_coo <- top_spps %>%
- group_by(spp_pair) %>%
- summarize(
-  n = n(),  # Proportion of grids with co-occurrence
-  .groups = "drop"
- ) %>%
- mutate(
-  wt = n / n_grids,
-  # Apply a smoothed scaling to balance rare/common pairs
-  wt_inv = 1 / wt, # Inverse frequency scaling
-  wt_log = log(wt + 1e-5),  # Optionally invert for comparison
-  wt_log_inv = 1 / log(wt + 1e-5),
-  wt_sq = sqrt(wt), # square root
-  wt_sq_inv = 1 / sqrt(wt), # inverse square root
-  wt_norm = (wt_log - min(wt_log)) / (max(wt_log) - min(wt_log))
- ) %>%
- arrange(n)
-head(spp_coo,15)
-
-dim(grid_tm)[1]
-summary(spp_coo$wt)
-
-# handle extremely rare cases ...
-# these influence the variance too much on the latent effect
-# gather list of rare pairings
-rare_tr <- 10  # Threshold for rare species pairs (1% of grids)
-rare_pairs <- spp_coo %>%
- filter(wt < 0.001) %>%
- pull(spp_pair)
-rare_pairs
-
-# check the weights distribution
-ggplot(spp_coo%>%filter(!spp_pair %in% rare_pairs),
-       aes(x = wt, y = wt_sq)) +
- geom_point(color = "blue") +
- labs(title = "Weight Scaling for Species Pairs", 
-      x = "Fractional Occurrence (fr)", 
-      y = "Scaled Weight (wt_sc)")
-
-# merge the co-occurrence observed to the grid-level spp_pairs
-spp_pairs <- top_spps %>%
- left_join(spp_coo, by="spp_pair") %>%
- arrange(n)
-head(spp_pairs,10)
-
-# Tidy up !
-rm(top_spps, spp_coo)
-gc()
-
+################################################################
 # drop oak woodlands to align with predominant forest type model
 grid_tm <- grid_tm %>%
  filter(fortypnm_gp != "oak_woodland",
@@ -267,7 +192,6 @@ grid_tm <- grid_tm %>%
 grid_tm <- grid_tm %>%
  left_join(shannon, by="grid_idx") %>%
  left_join(aspen_pr, by = "grid_idx") %>%
- left_join(spp_pairs, by = "grid_idx") %>%
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_idx, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm) # check the results
@@ -297,16 +221,10 @@ length(idx)
 # filter the data frame to remove these fires
 # also remove our rare_species
 grid_tm <- grid_tm %>%
- filter(
-  !Fire_ID %in% idx,
-  # !spp_pair %in% rare_pairs
- )
-
-# Check rows where spp_pair is NA
-nrow(grid_tm %>% filter(is.na(spp_pair))) # should be 0
+ filter(!Fire_ID %in% idx)
 
 # tidy up!
-rm(shannon, grid_counts, aspen_pr, spp_pairs, rare_pairs, idx)
+rm(shannon, grid_counts, aspen_pr, idx)
 gc()
 
 
@@ -408,7 +326,7 @@ da <- grid_tm %>%
      fm1000, fm1000_dv, rmin, rmin_dv, # climate
      tmmx, tmmx_dv, vs, vs_dv, #climate
      elev, slope, tpi, chili, # topography
-     day_prop # proportion daytime observations
+     day_prop, overlap, afd_count, # VIIRS detection characteristics
     ), ~ as.numeric(scale(.))
   ),
   log_fire_size = log(fire_acres) # log-scale fire size
@@ -422,12 +340,6 @@ da <- grid_tm %>%
  # keep just one row per grid cell by predominant type
  distinct(grid_idx, species_gp_n, .keep_all = TRUE) %>%
  arrange(grid_idx)
-
-
-# Check rows where spp_pair is NA
-if (nrow(da %>% filter(is.na(spp_pair))) == 0) {
- print("No NaN values for species pair")
-} # should be 0
 
 rm(grid_tm)
 gc()
@@ -450,7 +362,7 @@ set.seed(456)
 # 1. Baseline model (no random or latent effects)
 
 # setup the model formula
-mf.frp <- log_frp_csum_day ~ 1 + 
+mf.frp <- log_frp_max_day ~ 1 + 
  fortypnm_gp:H_tpp + # species diversity (abundance) by predominant forest type
  species_gp_n:ba_live_pr + # species proportion of live basal area
  species_gp_n:qmd_live + # species-level live quadratic mean diameter
@@ -665,7 +577,7 @@ str(field.idx)
 
 # Extract the predictor variables
 X <- da %>% 
- select(fire_id, first_obs_date, grid_index, spp_pair,
+ select(fire_id, first_obs_date, grid_index, 
         fortypnm_gp, species_gp_n, total_tpp, forest_pct,      
         canopypct, H_tpp, H_ba, ba_live_pr, tpp_live_pr, qmd_live, 
         tree_ht_live, live_dead_pr_tpp, live_dead_pr_ba,
@@ -675,7 +587,7 @@ head(X)
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
- data = list(log_frp_csum_day = da$log_frp_csum_day),
+ data = list(log_frp_max_day = da$log_frp_max_day),
  A = list(A, 1),  
  tag = 'est',
  effects = list(
@@ -1097,7 +1009,7 @@ str(field.idx)
 
 # Extract the predictor variables
 X <- da %>% 
- select(fire_id, first_obs_date, grid_index, spp_pair,
+ select(fire_id, first_obs_date, grid_index, 
         fortypnm_gp, species_gp_n, total_tpp, forest_pct,      
         canopypct, H_tpp, H_ba, ba_live_pr, tpp_live_pr, qmd_live, 
         tree_ht_live, live_dead_pr_tpp, live_dead_pr_ba,

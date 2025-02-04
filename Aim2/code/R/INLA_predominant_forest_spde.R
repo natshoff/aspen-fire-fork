@@ -49,7 +49,7 @@ grid_tm <-  read_csv(fp) %>% # read in the file
  # do some filtering of grids
  filter(
   day_count > 0, # only consider grids with some daytime observations
-  frp_max > 0, # make sure some daytime FRP values
+  frp_csum_day > 0, # make sure some daytime FRP values
   CBIbc_p90 > 0, # and CBI 0 -> these are often boundary grids
   overlap >= 0.5 # (optional) filter only grids with at least 50% detection overlap
  ) %>% 
@@ -88,14 +88,14 @@ grid_tm <-  read_csv(fp) %>% # read in the file
   # proportion of contributing AFD during daytime observations
   day_prop = day_count / afd_count,
   # log-scaled outcomes
-  log_frp_max = log(frp_max + 1e-5),
-  log_frp_csum = log(frp_csum + 1e-5),
-  log_frp_max_day = log(frp_max_day + 1e-5),
-  log_frp_max_night = log(frp_max_night + 1e-5),
-  log_frp_csum_day = log(frp_csum_day + 1e-5),
-  log_frp_csum_night = log(frp_csum_night + 1e-5),
-  log_frp_p90 = log(frp_p90_day + 1e-5),
-  log_frp_p95 = log(frp_p95_day + 1e-5),
+  log_frp_max = log(frp_max + 1), # maximum day/night FRP
+  log_frp_csum = log(frp_csum + 1), # cumulative (total day/night)
+  log_frp_max_day = log(frp_max_day + 1), # maximum daytime FRP
+  log_frp_max_night = log(frp_max_night + 1), # maximum nighttime FRP
+  log_frp_csum_day = log(frp_csum_day + 1), # daytime cumulative FRP
+  log_frp_csum_night = log(frp_csum_night + 1), # nighttime cumulative FRP
+  log_frp_p90 = log(frp_p90_day + 1),
+  log_frp_p95 = log(frp_p95_day + 1),
   # scale the percentages
   forest_pct = forest_pct / 100,
   fire_aspenpct = fire_aspenpct / 100,
@@ -150,12 +150,12 @@ dom_fortyp <- grid_tm %>%
  group_by(Fire_ID) %>%
  count(fortypnm_gp) %>%
  slice_max(n, n = 1, with_ties = FALSE) %>%
- rename(dom_fortyp = fortypnm_gp)
+ rename(fire_dfortyp = fortypnm_gp)
 # join back to grid_tm
 grid_tm <- grid_tm %>%
  left_join(dom_fortyp, by = "Fire_ID") %>%
- mutate(fire_fortyp = as.factor(interaction(Fire_ID, dom_fortyp)))
-head(grid_tm%>%select(Fire_ID,fortypnm_gp, dom_fortyp))
+ mutate(fire_dfortyp_int = as.factor(interaction(Fire_ID, fire_dfortyp)))
+head(grid_tm %>% select(Fire_ID, fortypnm_gp, fire_dfortyp, fire_dfortyp_int))
 rm(dom_fortyp)
 
 
@@ -169,9 +169,7 @@ resp_plot <- grid_tm %>%
  pivot_longer(cols = c(log_frp_max,
                        log_frp_max_day,
                        log_frp_csum, 
-                       log_frp_csum_day,
-                       CBIbc_p90, 
-                       CBIbc_p99),
+                       log_frp_csum_day),
               names_to = "variable",
               values_to = "value") %>%
  # Plot with facets
@@ -183,18 +181,17 @@ resp_plot <- grid_tm %>%
   labeller = as_labeller(c(log_frp_max = "log(Max FRP)",
                            log_frp_max_day = "log(Daytime Max FRP)",
                            log_frp_csum = "log(Cumulative FRP)",
-                           log_frp_csum_day = "log(Daytime Cumulative FRP)",
-                           CBIbc_p90 = "90th Percentile CBIbc",
-                           CBIbc_p99 = "99th Percentile CBIbc"))) +
+                           log_frp_csum_day = "log(Daytime Cumulative FRP)"))) +
  labs(x = "value",
       y = "Frequency") +
  theme_minimal()
 resp_plot
 
 # save the plot.
-out_png <- paste0(maindir,'figures/INLA_ResponseDistribution.png')
+out_png <- paste0(maindir,'figures/INLA_ResponseDistribution_FRP.png')
 ggsave(out_png, plot = resp_plot, dpi=500, bg = 'white')
 rm(resp_plot)
+
 
 ####################
 # correlation matrix
@@ -264,16 +261,16 @@ qt <- tibble::enframe(
  name = "qt", value = "val"
 )
 qt
-qt[2,]$val
+qt[1,]$val
 
 # create a data frame for just the predominant forest type
 # one row per grid_index with the dominant forest type
 # filter to where that type is at least 50% of the grid forested area
 da <- grid_tm %>%
  # keep only grids where predominant species cover at least 50%
- # filter grids below the 20th percentile in forest type percent
+ # filter grids below the 10th percentile in forest type percent
  filter(
-  (forest_pct > 0.50) & (fortyp_pct > qt[2,]$val),
+  (forest_pct > 0.50) & (fortyp_pct > qt[1,]$val),
  ) %>%
  # filter((forest_pct >= 0.50) |(fortyp_pct >= 0.50)) %>%
  # filter(fortyp_pct > qt[2,]$val) %>%
@@ -286,14 +283,14 @@ da <- grid_tm %>%
         log_frp_p90, log_frp_p95, # FRP response variables
         CBIbc_p90, CBIbc_p95, CBIbc_p99, CBIbc_mean, # CBI response variables
         fortypnm_gp, fortyp_pct, forest_pct, # forest type and percent cover
+        fire_dfortyp, fire_dfortyp_int, # fire-level dominant forest type
         canopypct_mean, balive_sum, # canopy percent and total live basal area
         erc, erc_dv, vpd, vpd_dv, # climate
         fm1000, fm1000_dv, rmin, rmin_dv, # climate
         tmmx, tmmx_dv, vs, vs_dv, #climate
         elev, slope, tpi, chili, # topography
         x, y, # grid centroid coordinate for spatial fields model
-        aspen, fire_aspenpct, # fire-level aspen percent/presence 
-        dom_fortyp, fire_fortyp # fire-level dominant forest type
+        aspen, fire_aspenpct # fire-level aspen percent/presence 
  ) %>%
  # center and scale continuous predictor variables
  mutate(
@@ -399,7 +396,7 @@ print(dim(da%>%filter(fortypnm_gp == "oak_woodland")))[1]
 da <- da %>%
  filter(!fortypnm_gp == "oak_woodland") %>%
  mutate(fortypnm_gp = droplevels(fortypnm_gp),
-        fire_fortyp = droplevels(fire_fortyp))
+        fire_dfortyp = droplevels(fire_dfortyp))
 levels(da$fortypnm_gp)
 
 # save a spatial polygon 
@@ -429,7 +426,7 @@ da$aspen <- as.factor(da$aspen)
 levels(da$aspen)
 
 # Set up the model formula
-mf.frp <- log_frp_csum_day ~ 1 +
+mf.frp <- log_frp_max_day ~ 1 +
  fortypnm_gp + # predominant forest type
  canopypct + # grid-level mean canopy percent
  erc_dv + vpd + vs + # climate/weather
@@ -681,15 +678,15 @@ str(field.idx)
 # Create a data frame for the predictors
 # baseline model includes predominant forest type, climate, and topography
 X <- da %>% 
- select(fire_id, first_obs_date, fire_doy, overlap, afd_count,
+ select(fire_id, first_obs_date, fire_doy, 
         forest_pct, fortyp_pct, fortypnm_gp, canopypct, 
         erc_dv, vpd, vs, slope, tpi, chili, elev,
-        aspen, day_prop)
+        aspen, day_prop, overlap, afd_count)
 head(X)
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
- data = list(log_frp_csum_day = da$log_frp_csum_day),
+ data = list(log_frp_max_day = da$log_frp_max_day),
  A = list(A, 1),  
  tag = 'est',
  effects = list(
@@ -826,13 +823,15 @@ gc()
 da <- da %>%
  mutate(
   log_cbi_mn = log(CBIbc_mean),
+  sqrt_cbi_mn = sqrt(CBIbc_mean),
   sqrt_cbi_p90 = sqrt(CBIbc_p90),
   sqrt_cbi_p95 = sqrt(CBIbc_p95),
   sqrt_cbi_p99 = sqrt(CBIbc_p99)
  ) 
 da %>%
  # pivot longer to facet plot
- pivot_longer(cols = c(CBIbc_mean, log_cbi_mn,
+ pivot_longer(cols = c(CBIbc_mean, log_cbi_mn, 
+                       sqrt_cbi_mn,
                        CBIbc_p90, sqrt_cbi_p90,
                        CBIbc_p95, sqrt_cbi_p95,
                        CBIbc_p99, sqrt_cbi_p99),
@@ -846,6 +845,7 @@ da %>%
   scales = "free",
   labeller = as_labeller(c(CBIbc_mean = "Average CBIbc",
                            log_cbi_mn = "log(Average CBIbc)",
+                           sqrt_cbi_mn = "sqrt(Average CBIbc)",
                            CBIbc_p90 = "90th Percentile CBIbc",
                            CBIbc_p95 = "95th Percentile CBIbc",
                            CBIbc_p99 = "99th Percentile CBIbc",
@@ -1398,7 +1398,7 @@ p3 <- tidy_combined %>%
   legend.title = element_text(size = 14),
   legend.text = element_text(size = 12)
  )
-p3
+# p3
 
 # Save the plot
 out_png <- paste0(maindir, 'figures/INLA_FORTYP_PosteriorEffects_Ridge_other_vars.png')
