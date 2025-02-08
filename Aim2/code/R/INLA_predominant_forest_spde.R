@@ -411,6 +411,10 @@ rm(grid, grid_tm, grid_counts, idx)
 gc()
 
 
+# check how many grids and fires
+length(unique(da$grid_idx))
+length(unique(da$fire_id))
+
 
 #===========MODEL FITTING==============#
 
@@ -579,6 +583,10 @@ range_est <- variograms %>%
  summarize(range_m = max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE))  # 90% of max
 qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1))
 qt
+# Compute and print the mean spatial range for FRP
+mean_range_frp <- mean(range_est$range_m, na.rm = TRUE)
+print(paste("Mean spatial range for FRP:", round(mean_range_frp, 2), "meters"))
+
 # Histogram of estimated spatial ranges
 ggplot(range_est, aes(x = range_m)) +
  geom_histogram(bins = 20, fill = "blue", alpha = 0.6) +
@@ -1011,6 +1019,10 @@ range_est <- variograms %>%
  summarize(range_m = max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE))  # 90% of max
 qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1))
 qt
+# Compute and print the mean spatial range for FRP
+mean_range_frp <- mean(range_est$range_m, na.rm = TRUE)
+print(paste("Mean spatial range for FRP:", round(mean_range_frp, 2), "meters"))
+
 # Histogram of estimated spatial ranges
 ggplot(range_est, aes(x = range_m)) +
  geom_histogram(bins = 20, fill = "blue", alpha = 0.6) +
@@ -1350,14 +1362,15 @@ p2 <- ggplot(fortyp_marginals, aes(x = x, y = forest_type, height = y, fill = re
  ) +
  scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
                    labels = c(
-                    "FRP" = "Cumulative Daytime FRP",
-                    "CBI" = "90th Percentile CBIbc")) +
+                    "FRP" = "Maximum Daytime FRP",
+                    "CBI" = "90th Percentile CBI")) +
+ coord_cartesian(xlim=c(-0.21,0.41)) +
  theme_classic() +
  theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
        axis.text.x = element_text(angle = 0, hjust = 0, size=9),
        axis.title.y = element_text(size = 10, margin = margin(r = 12)),
        axis.title.x = element_text(size = 10, margin = margin(t = 12)),
-       legend.position = c(0.20, 0.14),
+       legend.position = c(0.18, 0.14),
        legend.background = element_rect(
         fill = scales::alpha("white", 0.4), 
         color = NA, size = 0.8),
@@ -1367,7 +1380,7 @@ p2
 
 # save the plot.
 out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects_Ridge_species.png')
-ggsave(out_png, plot = p2, dpi = 300, width = 7, height = 4, bg = 'white')
+ggsave(out_png, plot = p2, dpi = 500, width = 7, height = 4, bg = 'white')
 
 
 
@@ -1401,7 +1414,7 @@ p3 <- tidy_combined %>%
 # p3
 
 # Save the plot
-out_png <- paste0(maindir, 'figures/INLA_FORTYP_PosteriorEffects_Ridge_other_vars.png')
+out_png <- paste0(maindir, 'figures/INLA_FORTYPNM_PosteriorEffects_Ridge_full.png')
 ggsave(out_png, plot = p3, dpi = 500, bg = 'white')
 
 

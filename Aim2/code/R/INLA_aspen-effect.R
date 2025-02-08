@@ -580,7 +580,8 @@ order.df <- tidy.effects.frp %>%
 # reorder the factors
 tidy.effects.frp <- tidy.effects.frp %>%
  left_join(order.df, by = "fortyp") %>%  # Merge mean effect values
- mutate(fortyp = factor(fortyp, levels = order.df$fortyp))  # Apply ordered factor levels
+ mutate(fortyp = factor(fortyp, levels = order.df$fortyp)) %>%
+ arrange(fortyp, desc(parameter))
 rm(order.df)
 # Verify ordering
 levels(tidy.effects.frp$fortyp)
@@ -589,9 +590,10 @@ head(tidy.effects.frp)
 # make the ridge plot
 frp.p1 <- ggplot(tidy.effects.frp, 
                  aes(x = x, y = fortyp, height = y, 
-                     fill = factor(parameter, levels = c("VPD-mediated", "Quaking aspen live BA")))) +
+                     fill = factor(parameter, levels = c("VPD-mediated", "Quaking aspen live BA")),
+                     alpha = factor(parameter, levels = c("VPD-mediated","Quaking aspen live BA")))) +
  geom_density_ridges(
-  stat = "identity", scale = 1.5, alpha = 0.7, show.legend=T) +
+  stat = "identity", scale = 1.5, show.legend=T) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
   x = "",
@@ -604,6 +606,13 @@ frp.p1 <- ggplot(tidy.effects.frp,
    "VPD-mediated" = "gray80"
   ),
   guide = guide_legend(title = "Model effect")
+ ) +
+ scale_alpha_manual(
+  values = c(
+   "Quaking aspen live BA" = 0.9,
+   "VPD-mediated" = 0.7
+  ),
+  guide = "none"  # Hide alpha from legend
  ) +
  coord_cartesian(xlim=c(-0.26,0.51)) +
  theme_minimal() +
@@ -878,9 +887,10 @@ head(tidy.effects.cbi)
 # make the ridge plot
 cbi.p1 <- ggplot(tidy.effects.cbi, 
                  aes(x = x, y = fortyp, height = y, 
-                     fill = factor(parameter, levels = c("VPD-mediated", "Quaking aspen live BA")))) +
+                     fill = factor(parameter, levels = c("Quaking aspen live BA", "VPD-mediated")),
+                     alpha = factor(parameter, levels = c("Quaking aspen live BA", "VPD-mediated")))) +
  geom_density_ridges(
-  stat = "identity", scale = 1.5, alpha = 0.7, show.legend=F) +
+  stat = "identity", scale = 1.5, show.legend=F) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
   x = "Effect Size",
@@ -891,6 +901,13 @@ cbi.p1 <- ggplot(tidy.effects.cbi,
    "Quaking aspen live BA" = "#1b9e77",
    "VPD-mediated" = "gray80"
   )
+ ) +
+ scale_alpha_manual(
+  values = c(
+   "Quaking aspen live BA" = 0.9,
+   "VPD-mediated" = 0.7
+  ),
+  guide = "none"  # Hide alpha from legend
  ) +
  coord_cartesian(xlim=c(-0.26,0.51)) +
  theme_minimal() +

@@ -367,7 +367,6 @@ mf.frp <- log_frp_max_day ~ 1 +
  species_gp_n:ba_live_pr + # species proportion of live basal area
  species_gp_n:qmd_live + # species-level live quadratic mean diameter
  species_gp_n:tree_ht_live + # species-level live tree height
- live_dead_pr_tpp + # grid-level proportion dead TPP
  canopypct + # grid-level canopy percent
  erc_dv + vpd + vs + # day-of-burn climate/weather
  elev + slope + tpi + chili + # grid-level topography 
@@ -760,7 +759,21 @@ tidy.effects.frp <- tidy.effects.frp %>%
                    pull(effect) %>%
                    unique()),
   fill_species = ifelse(is.na(species), "Global Effect", species)
- )
+ ) %>%
+ mutate(fill_species = recode(
+  fill_species,
+  "quaking_aspen" = "Quaking aspen",
+  "lodgepole" = "Lodgepole",
+  "mixed_conifer" = "Mixed-conifer",
+  "piñon_juniper" = "Piñon-juniper",
+  "ponderosa" = "Ponderosa",
+  "spruce_fir" = "Spruce-fir"
+ )) %>%
+ mutate(
+  fill_species = factor(fill_species, 
+                        levels = c("Lodgepole", "Mixed-conifer", 
+                                   "Piñon-juniper", "Ponderosa", 
+                                   "Spruce-fir", "Quaking aspen")))
 
 # check on the species name extraction
 unique(tidy.effects.frp$fill_species)
@@ -812,35 +825,50 @@ ggsave(out_png, dpi = 500, bg = 'white')
 # plot with just the species metrics
 frp.p2 <- tidy.effects.frp %>%
  filter(fill_species != "Global Effect") %>%
- ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
+ ggplot(., aes(x = x, y = effect, height = y, fill = fill_species, alpha = fill_species)) +
  geom_density_ridges(
-  stat = "identity", scale = 1.5, alpha = 0.7, show.legend=F) +
+  stat = "identity", scale = 1.5, show.legend=F) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
-  x = "Effect Size",
+  x = "",
   y = "Fixed Effect",
   fill = "Species"
  ) +
+ # add a subplot label
+ annotate("text", x = -0.13, y = 5, 
+          label = "(A)", fontface = "bold", 
+          size = 4, hjust = 0) +
  scale_fill_manual(
   values = c(
-   "quaking_aspen" = "#1b9e77",
-   "lodgepole" = "#d95f02",
-   "mixed_conifer" = "#7570b3",
-   "piñon_juniper" = "#e7298a",
-   "ponderosa" = "#66a61e",
-   "spruce_fir" = "#e6ab02"
+   "Quaking aspen" = "#1b9e77",
+   "Lodgepole" = "#d95f02",
+   "Mixed-conifer" = "#7570b3",
+   "Piñon-juniper" = "#e7298a",
+   "Ponderosa" = "#66a61e",
+   "Spruce-fir" = "#e6ab02"
   ),
   # Exclude "Global Effect" from the legend
   breaks = spps_breaks,  
   guide = guide_legend(title = "Species")
  ) +
- xlim(-0.12, 0.14) +
+ scale_alpha_manual(
+  values = c(
+   "Quaking aspen" = 0.9, 
+   "Lodgepole" = 0.7,  
+   "Mixed-conifer" = 0.7,
+   "Piñon-juniper" = 0.7,
+   "Ponderosa" = 0.7,
+   "Spruce-fir" = 0.7
+  ),
+  guide = "none"  # Hide alpha from legend
+ ) +
+ xlim(-0.13, 0.15) +
  theme_minimal() +
  theme(
   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
-  axis.title.y = element_text(size = 10, margin = margin(r = 12)),
-  axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+  axis.title.y = element_text(size = 10, margin = margin(r = 8)),
+  axis.title.x = element_text(size = 10, margin = margin(t = 8)),
   legend.position = c(0.85, 0.70),
   legend.background = element_rect(
    fill = scales::alpha("white", 0.6), 
@@ -874,7 +902,7 @@ mf.cbi <- CBIbc_p90 ~ 1 +
  species_gp_n:ba_live_pr + # species proportion of live basal area
  species_gp_n:qmd_live + # species-level live quadratic mean diameter
  species_gp_n:tree_ht_live + # species-level live tree height
- live_dead_pr_tpp + # grid-level proportion dead TPP
+ # live_dead_pr_tpp + # grid-level proportion dead TPP
  canopypct + # grid-level canopy percent
  erc_dv + vpd + vs + # day-of-burn climate/weather
  elev + slope + tpi + chili + # grid-level topography 
@@ -1204,7 +1232,13 @@ tidy.effects.cbi <- tidy.effects.cbi %>%
   "piñon_juniper" = "Piñon-juniper",
   "ponderosa" = "Ponderosa",
   "spruce_fir" = "Spruce-fir"
- ))
+ )) %>%
+ mutate(
+  fill_species = factor(fill_species, 
+                        levels = c("Lodgepole", "Mixed-conifer", 
+                                   "Piñon-juniper", "Ponderosa", 
+                                   "Spruce-fir", "Quaking aspen")))
+
 
 # check on the species name extraction
 unique(tidy.effects.cbi$fill_species)
@@ -1255,17 +1289,22 @@ ggsave(out_png, dpi = 500, bg = 'white')
 # plot with just the species metrics
 cbi.p2 <- tidy.effects.cbi %>%
  filter(fill_species != "Global Effect") %>%
- ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
+ ggplot(., aes(x = x, y = effect, height = y, fill = fill_species, alpha = fill_species)) +
  geom_density_ridges(
   stat = "identity", scale = 1.5,
-  alpha = 0.7,
-  show.legend=T) +
+  # alpha = 0.7,
+  show.legend=T
+ ) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
   x = "Effect Size",
   y = "Fixed Effect",
   fill = "Species"
  ) +
+ # add a subplot label
+ annotate("text", x = -0.13, y = 5, 
+          label = "(B)", fontface = "bold", 
+          size = 4, hjust = 0) +
  scale_fill_manual(
   values = c(
    "Quaking aspen" = "#1b9e77",
@@ -1277,21 +1316,36 @@ cbi.p2 <- tidy.effects.cbi %>%
   ),
   # Exclude "Global Effect" from the legend
   breaks = spps_breaks,  
-  guide = guide_legend(title = "Species")
+  guide = guide_legend(title = "Species", override.aes = list(size = 2))
  ) +
- coord_cartesian(xlim=c(-0.12,0.14)) +
+ scale_alpha_manual(
+  values = c(
+   "Quaking aspen" = 0.9, 
+   "Lodgepole" = 0.7,  
+   "Mixed-conifer" = 0.7,
+   "Piñon-juniper" = 0.7,
+   "Ponderosa" = 0.7,
+   "Spruce-fir" = 0.7
+  ),
+  guide = "none"  # Hide alpha from legend
+ ) +
+ coord_cartesian(xlim=c(-0.13,0.15)) +
  theme_minimal() +
  theme(
-  axis.text.y = element_text(angle = 0, hjust = 1, size=11),
-  axis.text.x = element_text(angle = 0, hjust = 0, size=11),
-  axis.title.y = element_text(size = 12, margin = margin(r = 12)),
-  axis.title.x = element_text(size = 12, margin = margin(t = 12)),
-  legend.position = c(0.90, 0.68),
+  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+  axis.title.y = element_text(size = 10, margin = margin(r = 8)),
+  axis.title.x = element_text(size = 10, margin = margin(t = 10)),
+  legend.position = c(0.91, 0.74),
   legend.background = element_rect(
-   fill = scales::alpha("white", 0.6), 
+   fill = scales::alpha("white", 0.7), 
    color = NA, size = 1),
-  legend.title = element_text(size = 12),
-  legend.text = element_text(size = 11)
+  legend.title = element_text(size = 10),
+  legend.text = element_text(size = 9),
+  legend.key.height = unit(0.4, "cm"), 
+  legend.key.width = unit(0.5, "cm"),
+  legend.spacing.y = unit(0.8, "cm"),    
+  legend.spacing.x = unit(0.6, "cm")
  )
 cbi.p2
 
@@ -1311,5 +1365,5 @@ frp.cbi.p3
 
 # Save the plot
 out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP-CBI_species.png')
-ggsave(out_png, dpi = 500, bg = 'white')
+ggsave(out_png, dpi = 500, width = 8, height = 6, bg = 'white')
 

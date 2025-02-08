@@ -6,17 +6,11 @@ maxwell.cook@colorado.edu
 
 import gc, time, os, sys, glob
 import shutil
-import pandas as pd
 import numpy as np
-import xarray as xr
 import pandas as pd
 import rioxarray as rxr
-import xarray as xr
-import geopandas as gpd
-import seaborn as sns
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib.colors import to_rgba
+import pyproj
 
 from itertools import combinations
 from collections import Counter
@@ -419,3 +413,120 @@ def get_spp_coo(df, spps_list, grid_col='grid_index', sp_col='fortypnm_gp'):
     gc.collect()
 
     return pair_counts
+
+
+def resample_bilinear(in_img, scale_factor, crs='EPSG:5070', match_img=None):
+    """
+    :param in_img:
+    :param to_img:
+    :param scale_factor:
+    :param proj4:
+    :return:
+    """
+
+    resampled = in_img.rio.reproject(
+        in_img.rio.crs,
+        shape=(
+            int(in_img.rio.height * scale_factor),
+            int(in_img.rio.width * scale_factor),
+        ),
+        resampling=Resampling.bilinear
+    )
+
+    if match_img is not None:
+        match_img = rxr.open_rasterio(match_img, masked=True, cache=False).squeeze()
+        resampled = resampled.rio.reproject_match(match_img)
+        del match_img
+        return resampled
+    else:
+        return resampled
+
+
+def rasterize_it(zones, ref_img, zone_col, open=False, crs='EPSG:5070'):
+    """
+    :param shp:
+    :param crs:
+    :param to_img:
+    :return:
+    """
+
+    if open is True:
+        ref = rxr.open_rasterio(ref_img, masked=True, lock=False, chunks=True).squeeze()
+    else:
+        ref = ref_img
+
+    # make sure the CRS matches
+    zones = zones.to_crs(crs)
+
+    # Using GeoCube to rasterize the Vector
+    rastered = make_geocube(
+        vector_data=zones,
+        measurements=[zone_col],
+        resolution=(-1000, 1000),
+        fill=np.nan
+    )
+
+    # Convert from Dataset to DataArray (extract first variable)
+    arr = rastered[zone_col]
+    # Ensure it matches the reference raster spatially
+    arr = arr.rio.write_crs(crs)  # Assign CRS
+    matched = arr.rio.reproject_match(ref, resampling=Resampling.bilinear)
+
+    del rastered, arr
+
+    return matched
+
+
+def plot_raster(raster, title="", cmap="viridis", legend_lab=""):
+    """
+    Plot a raster dataset using matplotlib.
+
+    :param raster: xarray.DataArray containing the raster data.
+    :param title: Title of the plot.
+    :param cmap: Colormap for visualization.
+    """
+
+    # Get spatial bounds
+    bounds = raster.rio.bounds()
+    xmin, ymin, xmax, ymax = bounds
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Mask out no-data values for better visualization
+    im = ax.imshow(
+        raster.squeeze(),
+        cmap=cmap,
+        extent=[xmin, xmax, ymin, ymax],  # Keep original projection extent
+        origin="upper"
+    )
+
+    # Convert tick locations from EPSG:5070 to EPSG:4326
+    transformer = pyproj.Transformer.from_crs("EPSG:5070", "EPSG:4326", always_xy=True)
+
+    def transform_ticks(ticks, axis="x"):
+        if axis == "x":
+            lat, lon = transformer.transform(ticks, np.full_like(ticks, ymin))
+        else:
+            lat, lon = transformer.transform(np.full_like(ticks, xmin), ticks)
+        return lat if axis == "x" else lon
+
+    # Set new x-axis ticks
+    xticks = np.linspace(xmin, xmax, num=6)
+    ax.set_xticks(xticks)
+    ax.set_xticklabels([f"{lon:.2f}" for lon in transform_ticks(xticks, "x")])
+
+    # Set new y-axis ticks
+    yticks = np.linspace(ymin, ymax, num=6)
+    ax.set_yticks(yticks)
+    ax.set_yticklabels([f"{lat:.2f}" for lat in transform_ticks(yticks, "y")])
+
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, shrink=0.7)
+    cbar.set_label(legend_lab)
+
+    # Labels and title
+    ax.set_title(title)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+
+    plt.show()
