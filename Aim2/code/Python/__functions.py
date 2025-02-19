@@ -368,51 +368,49 @@ def monitor_export(task, timeout=30):
         print(f"Export ended with state: {status['state']}")
 
 
-def get_spp_coo(df, spps_list, grid_col='grid_index', sp_col='fortypnm_gp'):
+def get_spp_coo(df, spps_list=None, grid_col='grid_index', sp_col='fortypnm_gp', wt_col=None):
     """
     Analyzes species co-occurrence within grid cells.
-
     Parameters:
         df (pd.DataFrame): Input DataFrame containing species and grid information.
         spps_list (list): List of species to filter and analyze.
         grid_col (str): Column name representing the spatial unit (default: 'grid_index').
         sp_col (str): Column name representing the species (default: 'fortypnm_gp').
-
+        wt_col (str): Column to use for weighting by abundance or dominance
     Returns:
         pd.DataFrame: DataFrame with co-occurrence counts and percentages.
     """
 
     # Filter the DataFrame to only include relevant species
-    df_ = df[df[sp_col].isin(spps_list)]
+    df[sp_col] = df[sp_col].str.lower()  # force to lower case
+    if spps_list is not None:
+        df_ = df[df[sp_col].isin(spps_list)].copy()
+    else:
+        df_ = df.copy()
     print(f"\nSpecies occurrence counts:\n{df_[sp_col].value_counts()}\n")
 
-    # Group species by grid unit and get unique lowercase species per grid
-    spp_grid = (
-        df_.groupby(grid_col)[sp_col]
-        .apply(lambda x: list(x.str.lower().unique()))
-        .reset_index()
+    # If not weight is provided, assume binary presence
+    if wt_col is None:
+        df_['weight'] = 1
+    else:
+        df_['weight'] = df_[wt_col]
+
+    # Create species-grid abundance pivot table
+    spp_grid = df_.pivot_table(
+        index=grid_col, columns=sp_col, values='weight', aggfunc='sum', fill_value=0
     )
 
-    # Generate all pairwise species combinations per grid cell
-    pairs = spp_grid[sp_col].apply(
-        lambda species_list: list(combinations(species_list, 2))
-    )
-    # Flatten the list of all pairs
-    all_pairs = [pair for sublist in pairs for pair in sublist]
-    # Count co-occurrences of each species pair
-    pair_counts = (
-        pd.DataFrame(Counter(all_pairs).items(), columns=['species_pair', 'coo_count'])
-        .sort_values(by='coo_count', ascending=False)
-    )
+    # Compute co-occurrence by multiplying the species-grid matrix with its transpose
+    coo_mat = spp_grid.T.dot(spp_grid)
 
-    # Calculate co-occurrence percentage
-    pair_counts['coo_pct'] = pair_counts['coo_count'] / len(spp_grid) * 100
+    # Compute co-occurrence percentage: (shared grids) / (grids where either species appears)
+    species_totals = np.diag(coo_mat)  # Total occurrences per species
+    coo_pct = coo_mat.div(species_totals[:, None] + species_totals - coo_mat, axis=0)
 
-    # Clean up memory
-    del spp_grid, df_, pairs
-    gc.collect()
+    # Set self-co-occurrence to 1
+    np.fill_diagonal(coo_pct.values, 1)
 
-    return pair_counts
+    return coo_mat, coo_pct
 
 
 def resample_bilinear(in_img, scale_factor, crs='EPSG:5070', match_img=None):
