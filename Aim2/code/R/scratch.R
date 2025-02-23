@@ -1,3 +1,71 @@
+
+# ##################################################################
+# # 4. Baseline + Temporal + Fire-level + Species-pair latent effect
+# # requires building a precision matrix using species pairs
+# # weighted by the observed co-occurrence frequency
+# 
+# # gather unique species pairs
+# spp_pairs <- unique(da$spp_pair)
+# n_pairs <- length(spp_pairs)
+# # build the precision matrix
+# prec_mat <- Matrix(0, nrow = n_pairs, ncol = n_pairs, sparse = TRUE)
+# rownames(prec_mat) <- spp_pairs
+# colnames(prec_mat) <- spp_pairs
+# # populate diagonal with weights
+# # appropriate for balancing rare/common pairings
+# for (pair in spp_pairs) {
+#  wt_norm <- mean(da$wt_norm[da$spp_pair == pair])  # Use mean weight for each spp_pair
+#  prec_mat[pair, pair] <- wt_norm
+# }
+# # check positive-definiteness
+# if (!all(eigen(prec_mat)$values > 0)) {
+#  diag(prec_mat) <- diag(prec_mat) + 1e-4  # Add a small constant to diagonals
+# }
+# # ensure symmetry and positive-definiteness
+# prec_mat <- Matrix::nearPD(prec_mat, corr = FALSE)$mat
+# # match spp_pair levels in 'da' to precision matrix
+# da$spp_pair <- factor(da$spp_pair, levels = rownames(prec_mat))
+# # Verify alignment
+# stopifnot(all(levels(da$spp_pair) %in% rownames(prec_mat)))
+# stopifnot(all(rownames(prec_mat) %in% levels(da$spp_pair)))
+# # Verify positive semi-definiteness
+# isSymmetric(prec_mat)  # Should return TRUE
+# all(eigen(prec_mat)$values > 0)  # Should return TRUE
+# # Verify factor dimensions
+# nrow(prec_mat) == length(unique(da$spp_pair))  # Should return TRUE
+# 
+# 
+# ##########################
+# # update the model formula 
+# mf.frp.re2.spp <- update(
+#  mf.frp.re2, 
+#  . ~ 1 + . + 
+#  f(spp_pair, model = "generic0", Cmatrix = prec_mat,
+#    values = levels(da$spp_pair),
+#    hyper = list(
+#     prec = list(prior = "pc.prec", param = c(1, 0.01))
+#    ))
+# )
+# 
+# # fit the model
+# ml.frp.re.spp <- inla(
+#  mf.frp.re2.spp, data = da,
+#  family = "gaussian",
+#  control.predictor = list(compute=T),
+#  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+#  control.fixed = list(
+#   prec = list(prior = "pc.prec", param = c(1, 0.5))
+#  ) 
+# )
+# summary(ml.frp.re.spp)
+# 
+# # check on predictive power of the random effects models
+# mean(ml.frp.re2$cpo$cpo, na.rm = TRUE)
+# mean(ml.frp.re.spp$cpo$cpo, na.rm = TRUE)
+# 
+# rm(prec_mat)
+# gc()
+
 ##################################################
 # Examine the semivariogram for spatial dependence
 # Function to compute semivariogram for each fire

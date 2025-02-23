@@ -49,9 +49,7 @@ grid_tm <-  read_csv(fp) %>% # read in the file
  # do some filtering of grids
  filter(
   day_count > 0, # only consider grids with some daytime observations
-  frp_csum_day > 0, # make sure some daytime FRP values
   CBIbc_p90 > 0, # and CBI 0 -> these are often boundary grids
-  overlap >= 0.5 # (optional) filter only grids with at least 50% detection overlap
  ) %>% 
  # create a numeric fire ID
  mutate(
@@ -241,8 +239,8 @@ rm(cor_plot)
 #===========MODEL SETUP==============#
 
 # list of species names
-spps <- c("quaking_aspen", "mixed_conifer", "lodgepole", "ponderosa", 
-          "spruce_fir", "piñon_juniper", "oak_woodland")
+spps <- c("quaking_aspen", "douglas_fir", "white_fir", "gambel_oak",
+          "lodgepole_pine", "ponderosa_pine", "spruce_fir", "piñon_juniper")
 
 # force aspen to be the baseline
 grid_tm <- grid_tm %>%
@@ -269,11 +267,11 @@ qt[1,]$val
 da <- grid_tm %>%
  # keep only grids where predominant species cover at least 50%
  # filter grids below the 10th percentile in forest type percent
- filter(
-  (forest_pct > 0.50) & (fortyp_pct > qt[1,]$val),
- ) %>%
+ # filter(
+ #  (forest_pct > 0.50) & (fortyp_pct > qt[1,]$val),
+ # ) %>%
  # filter((forest_pct >= 0.50) |(fortyp_pct >= 0.50)) %>%
- # filter(fortyp_pct > qt[2,]$val) %>%
+ filter(fortyp_pct > 0.50) %>%
  # select the columns we need for modeling
  select(grid_index, grid_idx, Fire_ID, fire_acres, # ID columns
         day_prop, overlap, afd_count, # proportion daytime observations and percent detection overlap
@@ -359,42 +357,43 @@ da %>%
  ungroup()
 
 
-#################################################
-# Count the number of unique fortypnm_gp per fire
-da %>%
- group_by(fire_id) %>%
- summarize(n_types = n_distinct(fortypnm_gp)) %>%
- summarize(
-  mean_types = mean(n_types),
-  median_types = median(n_types),
-  min_types = min(n_types),
-  max_types = max(n_types)
- )
-
-# Compute the number of forest types per fire
-fire_div <- da %>%
- group_by(fire_id) %>%
- summarize(n_types = n_distinct(fortypnm_gp),
-           fire_size = first(log_fire_size),  # or another metric
-           mean_FRP = mean(log_frp_csum))  # Avg fire radiative power
-
-# Check if `fire_id` is absorbing forest type effects
-ggplot(fire_div, aes(x = n_types, y = mean_FRP)) +
- geom_point(alpha = 0.5) +
- geom_smooth(method = "lm", se = FALSE, color = "red") +
- labs(x = "Number of Forest Types per Fire", y = "Mean FRP",
-      title = "Does Fire-Level Forest Type Diversity Influence FRP?") +
- theme_minimal()
-
-rm(fire_div)
-gc()
+# #################################################
+# # Count the number of unique fortypnm_gp per fire
+# da %>%
+#  group_by(fire_id) %>%
+#  summarize(n_types = n_distinct(fortypnm_gp)) %>%
+#  summarize(
+#   mean_types = mean(n_types),
+#   median_types = median(n_types),
+#   min_types = min(n_types),
+#   max_types = max(n_types)
+#  )
+# 
+# # Compute the number of forest types per fire
+# fire_div <- da %>%
+#  group_by(fire_id) %>%
+#  summarize(n_types = n_distinct(fortypnm_gp),
+#            fire_size = first(log_fire_size),  # or another metric
+#            mean_FRP = mean(log_frp_csum))  # Avg fire radiative power
+# 
+# # Check if `fire_id` is absorbing forest type effects
+# ggplot(fire_div, aes(x = n_types, y = mean_FRP)) +
+#  geom_point(alpha = 0.5) +
+#  geom_smooth(method = "lm", se = FALSE, color = "red") +
+#  labs(x = "Number of Forest Types per Fire", y = "Mean FRP",
+#       title = "Does Fire-Level Forest Type Diversity Influence FRP?") +
+#  theme_minimal()
+# 
+# rm(fire_div)
+# gc()
 
 #################################################
 # Subset species with too few observations
 print("Dropping small classes:")
-print(dim(da%>%filter(fortypnm_gp == "oak_woodland")))[1]
+small_spps <- c("gambel_oak","douglas_fir","white_fir")
+print(dim(da%>%filter(fortypnm_gp %in% small_spps)))[1]
 da <- da %>%
- filter(!fortypnm_gp == "oak_woodland") %>%
+ filter(!fortypnm_gp %in% small_spps) %>%
  mutate(fortypnm_gp = droplevels(fortypnm_gp),
         fire_dfortyp = droplevels(fire_dfortyp))
 levels(da$fortypnm_gp)
@@ -430,8 +429,8 @@ da$aspen <- as.factor(da$aspen)
 levels(da$aspen)
 
 # Set up the model formula
-mf.frp <- log_frp_max_day ~ 1 +
- fortypnm_gp + # predominant forest type
+mf.frp <- log_frp_csum_day ~ 1 +
+ fortypnm_gp + # predominant (majority) forest species
  canopypct + # grid-level mean canopy percent
  erc_dv + vpd + vs + # climate/weather
  elev + slope + tpi + chili + # topography
@@ -439,6 +438,7 @@ mf.frp <- log_frp_max_day ~ 1 +
  day_prop + # proportion of daytime detections 
  afd_count + # number of contributing detections
  aspen # fire-level aspen presence
+
 # fit the model                     
 ml.frp <- inla(
  mf.frp, data = da, 
@@ -694,7 +694,7 @@ head(X)
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
- data = list(log_frp_max_day = da$log_frp_max_day),
+ data = list(log_frp_csum_day = da$log_frp_csum_day),
  A = list(A, 1),  
  tag = 'est',
  effects = list(
@@ -1334,8 +1334,8 @@ fortyp_marginals <- tidy_combined %>%
         forest_type = recode(
          forest_type,
          "mixed_conifer" = "Mixed Conifer",
-         "lodgepole" = "Lodgepole",
-         "ponderosa" = "Ponderosa",
+         "lodgepole_pine" = "Lodgepole pine",
+         "ponderosa_pine" = "Ponderosa pine",
          "spruce_fir" = "Spruce-Fir",
          "piñon_juniper" = "Piñon-Juniper"
         ))
@@ -1364,7 +1364,7 @@ p2 <- ggplot(fortyp_marginals, aes(x = x, y = forest_type, height = y, fill = re
                    labels = c(
                     "FRP" = "Maximum Daytime FRP",
                     "CBI" = "90th Percentile CBI")) +
- coord_cartesian(xlim=c(-0.21,0.41)) +
+ coord_cartesian(xlim=c(-0.21,0.48)) +
  theme_classic() +
  theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
        axis.text.x = element_text(angle = 0, hjust = 0, size=9),
