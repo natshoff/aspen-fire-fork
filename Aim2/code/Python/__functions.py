@@ -475,7 +475,7 @@ def rasterize_it(zones, ref_img, zone_col, open=False, crs='EPSG:5070'):
     return matched
 
 
-def plot_raster(raster, title="", cmap="viridis", legend_lab=""):
+def plot_raster(raster, title="", cmap="viridis", legend_lab="", save_file=False, out_png=None):
     """
     Plot a raster dataset using matplotlib.
 
@@ -526,5 +526,12 @@ def plot_raster(raster, title="", cmap="viridis", legend_lab=""):
     ax.set_title(title)
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
+
+    # save if specific
+    if save_file is True:
+        if out_png is not None:
+            plt.savefig(out_png, dpi=500, bbox_inches='tight')
+        else:
+            print("File not saved, please specify an output path.")
 
     plt.show()
