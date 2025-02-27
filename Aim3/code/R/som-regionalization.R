@@ -17,7 +17,9 @@ grid_fortyp <- grid %>% select(grid_id, dom_spp1, dom_spp2, dom_spp3)
 # select numeric variables for SOM
 X <- grid %>%
  st_drop_geometry() %>%
- select(-c(grid_id, p_area, p_count)) %>%  # Remove ID and very small numeric values
+ select(-c(grid_id, p_area, p_count,
+           iFLP1_p90, iFLP2_p90, iFLP3_p90,
+           burned_area)) %>%  # Remove ID and very small numeric values
  select(where(is.numeric)) %>%  # Keep only numeric columns
  # Fill NA in population data and scale everything
  mutate(
@@ -26,10 +28,6 @@ X <- grid %>%
  )
 # Check structure
 str(X)
-
-# tidy up what we can
-rm(grid)
-gc()
 
 
 #==============VARIABLE WEIGHTING================#
@@ -79,8 +77,8 @@ pca.results <- prcomp(X, scale = TRUE)
 pca.imp <- abs(pca.results$rotation[, 1])
 
 # Compute weights: Invert importance (rare variables get higher weight)
-# wt.quant <- 1 / (pca.imp + 0.01)  # Small constant to avoid division by zero
-wt.quant <- pca.imp
+wt.quant <- 1 / (pca.imp + 0.01)  # Small constant to avoid division by zero
+# wt.quant <- pca.imp
 
 # Normalize weights between 1 and 10 (or another range)
 wt.quant <- scales::rescale(wt.quant, to = c(1, 10))
@@ -96,7 +94,7 @@ X.wt.q <- X * wt.quant[colnames(X)]
 #==============SOM SETUP================#
 
 # Define SOM grid size (adjust xdim & ydim as needed)
-som.grid <- kohonen::somgrid(xdim = 8, ydim = 8, topo = "hexagonal")
+som.grid <- kohonen::somgrid(xdim = 12, ydim = 12, topo = "hexagonal")
 
 # Train the SOM
 set.seed(123)  # For reproducibility
@@ -128,7 +126,7 @@ for (i in 1:ncol(X)) {
 #==============MAP GRIDS================#
 
 # Perform hierarchical clustering on SOM node weights
-som.cluster <- cutree(hclust(dist(som.model$codes[[1]])), k = 7)  # Adjust 'k' as needed
+som.cluster <- cutree(hclust(dist(som.model$codes[[1]])), k = 10)  # Adjust 'k' as needed
 # Assign clusters to each grid cell
 grid$som.cluster <- som.cluster[som.model$unit.classif]
 # Check distribution of clusters
@@ -141,6 +139,18 @@ ggplot(grid) +
  theme_minimal()
 
 
+#==============VARIABLE CONTRIBUTION================#
+
+# Convert to long format for plotting
+cluster_profiles_long <- cluster_profiles %>%
+ pivot_longer(cols = -cluster, names_to = "Variable", values_to = "MeanValue")
+
+# Bar plot of variable contributions by cluster
+ggplot(cluster_profiles_long, aes(x = Variable, y = MeanValue, fill = as.factor(cluster))) +
+ geom_bar(stat = "identity", position = "dodge") +
+ coord_flip() +
+ theme_minimal() +
+ labs(title = "Cluster Profiles: Driving Variables", x = "Variable", y = "Mean Value", fill = "Cluster")
 
 
 
