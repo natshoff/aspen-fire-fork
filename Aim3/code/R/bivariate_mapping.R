@@ -13,6 +13,7 @@ glimpse(future.fire)
 
 #######################
 # aspen suitability map
+
 p1 <- ggplot(future.fire) +
  geom_sf(aes(fill = f_aspen_mn), color = NA) +  # No border for smooth visualization
  scale_fill_viridis(option = "viridis", na.value = "gray80", name = "Aspen Suitability") +

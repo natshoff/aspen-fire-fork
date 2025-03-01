@@ -19,7 +19,7 @@ X <- grid %>%
  st_drop_geometry() %>%
  select(-c(grid_id, p_area, p_count,
            iFLP1_p90, iFLP2_p90, iFLP3_p90,
-           burned_area)) %>%  # Remove ID and very small numeric values
+           burned_area)) %>%  # Remove ID
  select(where(is.numeric)) %>%  # Keep only numeric columns
  # Fill NA in population data and scale everything
  mutate(
