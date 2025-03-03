@@ -45,26 +45,21 @@ print(eco.trends)
 
 ##################################################
 # load the spatial data and merge the results back
-grid <- st_read(paste0(projdir,'data/spatial/mod/future_fire_grid.gpkg'))
-glimpse(grid)
+ecol4 <- st_read(paste0(projdir,'data/spatial/raw/boundaries/srm_eco_l4.gpkg'))
+glimpse(ecol4)
 
 # join the results
-grid <- grid %>%
- left_join(eco.trends, by='US_L4CODE') %>%
- # handle the boundary grids (duplicated) by taking the mean
- group_by(grid_id) %>%
- summarise(across(c(trend_area, trend_count, p_area, p_count), mean, na.rm = TRUE),  # Take mean for trend values
-           across(where(is.character), first),  # Keep first occurrence of categorical variables
-           geom = first(geom), .groups = "drop") %>%  # Keep one geometry per grid
- st_as_sf()
-glimpse(grid)
+ecol4 <- ecol4 %>%
+ left_join(eco.trends, by='US_L4CODE')
+glimpse(ecol4)
 
 
 #################
 # fire area trend
-p1 <- ggplot(grid) +
+p1 <- ggplot(ecol4) +
  geom_sf(aes(fill = trend_area), color = NA) +  # No border for smooth visualization
- scale_fill_viridis(option = "magma", direction = -1, na.value = "gray80", name = "Fire Size Trend") +
+ scale_fill_distiller(palette = "YlOrRd", direction = 1, name = "Burned area trend") +
+ # scale_fill_viridis(option = "inferno", direction = -1, name = "Fire Size Trend") +
  guides(fill = guide_colourbar(direction = "vertical", 
                                barwidth = 0.8, 
                                barheight = 10, 
@@ -87,9 +82,11 @@ p1 <- ggplot(grid) +
 p1
 
 # fire counts trend
-p2 <- ggplot(grid) +
+p2 <- ggplot(ecol4) +
  geom_sf(aes(fill = trend_count), color = NA) +  # No border for smooth visualization
- scale_fill_viridis(option = "magma", direction = -1, na.value = "gray80", name = "Fire Count Trend") +
+ scale_fill_distiller(palette = "YlOrRd", direction = 1, name = "Fire occurrence trend") +
+ # scale_fill_gradient(low = "#ffedea", high = "#b30000") + 
+ # scale_fill_viridis(option = "YlOrRd", direction = 1, name = "Fire Count Trend") +
  guides(fill = guide_colourbar(direction = "vertical", 
                                barwidth = 0.8, 
                                barheight = 10, 
@@ -116,8 +113,11 @@ p3
 
 # save the plot.
 out_png <- paste0(projdir,'figures/SouthernRockies_FutureFire_Trends.png')
-ggsave(out_png, plot = p3, dpi = 500, bg = 'white')
+ggsave(out_png, plot = p3, dpi = 500, height=6.5, width=7, bg = 'white')
 
 # save the spatial data
-out_fp <- paste0(projdir,'data/spatial/mod/future_fire_grid_trend.gpkg')
-st_write(grid, out_fp)
+out_fp <- paste0(projdir,'data/spatial/mod/future_fire_ecol4_trend.gpkg')
+st_write(ecol4, out_fp, append = F)
+
+
+
