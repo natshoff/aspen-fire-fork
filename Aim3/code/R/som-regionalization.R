@@ -5,6 +5,8 @@ library(tidyverse)
 library(sf)
 library(kohonen)
 library(reshape2)
+library(ggspatial)
+library(gridExtra)
 
 projdir <- "/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim3/"
 
@@ -76,26 +78,44 @@ for (i in 1:ncol(X)) {
 
 #==============MAP GRIDS================#
 
+# Compute distance matrix on SOM codebook vectors
+dist_mat <- dist(som.model$codes[[1]]) 
+
 # Perform hierarchical clustering on SOM node weights
-som.cluster <- kmeans(som.model$codes[[1]], centers = 6)$cluster  # Adjust 'k' as needed
+# som.cluster <- kmeans(som.model$codes[[1]], centers = 6)$cluster  # Adjust 'k' as needed
+hc <- hclust(dist_mat, method = "ward.D2")
+som.cluster <- cutree(hc, k = 6)  
+
 # Assign clusters to each fireshed
 firesheds$som.cluster <- som.cluster[som.model$unit.classif]
 # Check distribution of clusters
 table(firesheds$som.cluster)
 
 # make the spatial map
-ggplot(firesheds) +
+cl.map <- ggplot(firesheds) +
  geom_sf(aes(fill = as.factor(som.cluster)), color = NA) +
- scale_fill_viridis_d(name = "SOM Cluster") +
- theme_minimal()
-
+ scale_fill_brewer(palette = "Accent", name = "SOM Cluster") +
+ theme_void() +
+ coord_sf(expand = FALSE) +
+ ggspatial::annotation_scale(location = "br", width_hint = 0.1,
+                             pad_x = unit(0.15,"in"), pad_y = unit(0.05,"in"),
+                             line_width = 0.5, text_pad = unit(0.15,"cm"),
+                             height = unit(0.15,"cm")) +
+ ggspatial::annotation_north_arrow(location = "br", which_north = "true",
+                                   pad_x = unit(0.25,"in"), pad_y= unit(0.2,"in"),
+                                   width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+                                   style = north_arrow_fancy_orienteering)
+cl.map
+# save the plot.
+out_png <- paste0(projdir,'figures/SRM_Firesheds_SOMclusters.png')
+ggsave(out_png, plot = cl.map, dpi = 500, width = 8, height = 6, bg = 'white')
 
 
 #==============VARIABLE CONTRIBUTION================#
 
 codes_df <- as.data.frame(som.model$codes[[1]])
 colnames(codes_df) <- colnames(X)
-codes_df$cluster <- factor(kmeans(som.model$codes[[1]], centers = 5)$cluster)
+codes_df$cluster <- factor(som.cluster)  # Use hclust assignments
 
 # Reshape for visualization
 codes_m <- melt(codes_df, id.vars = "cluster")
