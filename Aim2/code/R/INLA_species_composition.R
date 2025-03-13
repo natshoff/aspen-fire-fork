@@ -318,24 +318,25 @@ da %>%
  distinct(grid_idx) %>%
  summarize(n = n()) # abundance
 
-# (optionally) remove rare species
-rm.spps <- c("gambel_oak")
-da <- da %>%
- filter(!species_gp_n %in% rm.spps,
-        !fortypnm_gp %in% rm.spps) %>%
- mutate(species_gp_n = droplevels(species_gp_n),
-        fortypnm_gp = droplevels(fortypnm_gp),
-        dom_spp_ba = droplevels(dom_spp_ba),
-        dom_spp_tpp = droplevels(dom_spp_tpp)) %>%
- # re-calculate the predominant species by raw BA and TPP
- group_by(grid_idx) %>%
- mutate(
-  dom_spp_ba = as.factor(species_gp_n[which.max(ba_live)]),
-  dom_spp_tpp = as.factor(species_gp_n[which.max(tpp_live)]),
-  dom_spp_qmd = as.factor(species_gp_n[which.max(qmd_live)]),
- ) %>%
- ungroup()
-levels(da$species_gp_n)
+# # (optionally) remove rare species
+# rm.spps <- c("gambel_oak")
+# da <- da %>%
+#  filter(!species_gp_n %in% rm.spps,
+#         !fortypnm_gp %in% rm.spps) %>%
+#  mutate(species_gp_n = droplevels(species_gp_n),
+#         fortypnm_gp = droplevels(fortypnm_gp),
+#         dom_spp_ba = droplevels(dom_spp_ba),
+#         dom_spp_tpp = droplevels(dom_spp_tpp)) %>%
+#  # re-calculate the predominant species by raw BA and TPP
+#  group_by(grid_idx) %>%
+#  mutate(
+#   dom_spp_ba = as.factor(species_gp_n[which.max(ba_live)]),
+#   dom_spp_tpp = as.factor(species_gp_n[which.max(tpp_live)]),
+#   dom_spp_qmd = as.factor(species_gp_n[which.max(qmd_live)]),
+#  ) %>%
+#  ungroup()
+# levels(da$species_gp_n)
+
 
 #####################################################
 
@@ -369,11 +370,10 @@ set.seed(456)
 # 1. Baseline model (no random or latent effects)
 
 # setup the model formula
-mf.frp <- log_frp_csum ~ 1 + 
- dom_spp_ba + # majority forest type
+mf.frp <- log_frp_csum_day ~ 1 + 
+ fortypnm_gp:H_tpp + # majority forest type:gridcell diversity
  species_gp_n:ba_live_pr + # species-specific live basal area proportion
  species_gp_n:qmd_live + # species-specific live quadratic mean diameter
- H_ba + # gridcell diversity (abundance-based)
  canopypct + # grid-level canopy percent
  erc_dv + vpd + vs + # day-of-burn climate/weather
  elev + slope + tpi + chili + # grid-level topography 
@@ -532,7 +532,7 @@ head(X)
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
- data = list(log_frp_csum = da$log_frp_csum),
+ data = list(log_frp_csum_day = da$log_frp_csum_day),
  A = list(A, 1),  
  tag = 'est',
  effects = list(
@@ -678,7 +678,7 @@ tidy.effects.frp <- tibble::tibble(
   effect = case_when(
    str_detect(parameter, "ba_live_pr") ~ "Proportion of \nLive Basal Area",
    str_detect(parameter, "qmd_live") ~ "Quadratic\nMean Diameter",
-   # str_detect(parameter, "H_tpp") ~ "Shannon Index\n(Abundance-based)",
+   str_detect(parameter, "H_tpp") ~ "Shannon Index\n(Abundance-based)",
    # str_detect(parameter, "tree_ht_live") ~ "Tree height (m)",
    TRUE ~ parameter  # Default for all other fixed effects
   ),
@@ -710,18 +710,18 @@ tidy.effects.frp <- tidy.effects.frp %>%
  mutate(fill_species = recode(
   fill_species,
   "quaking_aspen" = "Quaking aspen",
-  "lodgepole" = "Lodgepole",
+  "lodgepole" = "Lodgepole pine",
   "douglas_fir" = "Douglas-fir",
   "white_fir" = "White fir",
   "gambel_oak" = "Gambel oak",
   "piñon_juniper" = "Piñon-juniper",
-  "ponderosa" = "Ponderosa",
+  "ponderosa" = "Ponderosa pine",
   "spruce_fir" = "Spruce-fir"
  )) %>%
  mutate(
   fill_species = factor(fill_species, 
-                        levels = c("Lodgepole", "Douglas-fir", "White fir",
-                                   "Gambel oak", "Piñon-juniper", "Ponderosa", 
+                        levels = c("Lodgepole pine", "Douglas-fir", "White fir",
+                                   "Gambel oak", "Piñon-juniper", "Ponderosa pine", 
                                    "Spruce-fir", "Quaking aspen")))
 
 # check on the species name extraction

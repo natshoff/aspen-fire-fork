@@ -14,9 +14,27 @@ projdir <- "/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/A
 firesheds <- st_read(paste0(projdir,'data/spatial/mod/srm_firesheds_model_data.gpkg'))
 glimpse(firesheds)
 
-# keep a version with just EVT information
+# keep a version with categorical EVT
 firesheds_lf <- firesheds %>% 
  select(sfs_id, dom_evt1, dom_evt2, dom_evt3, dom_evt4)
+
+
+##################
+# Existing aspen #
+
+firesheds.aspen <- firesheds %>%
+ mutate(aspen10_pct = if_else(aspen10_pct < 0.01, 0, aspen10_pct)) %>%
+ filter(aspen10_pct > 0)
+dim(firesheds.aspen)
+
+###################
+# Aspen expansion #
+
+firesheds.noaspen <- firesheds %>%
+ mutate(aspen10_pct = if_else(aspen10_pct < 0.01, 0, aspen10_pct)) %>%
+ filter(aspen10_pct == 0)
+dim(firesheds.noaspen)
+
 
 # select numeric variables for SOM
 X <- firesheds %>%

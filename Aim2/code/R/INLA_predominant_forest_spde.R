@@ -50,7 +50,7 @@ grid_tm <-  read_csv(fp) %>% # read in the file
  filter(
   day_count > 0, # only consider grids with some daytime observations
   CBIbc_p90 > 0, # and CBI 0 -> these are often boundary grids
- ) %>% 
+ ) %>%  
  # create a numeric fire ID
  mutate(
   # create a new unique identifier
@@ -266,11 +266,7 @@ qt[1,]$val
 # filter to where that type is at least 50% of the grid forested area
 da <- grid_tm %>%
  # keep only grids where predominant species cover at least 50%
- # filter grids below the 10th percentile in forest type percent
- # filter(
- #  (forest_pct > 0.50) & (fortyp_pct > qt[1,]$val),
- # ) %>%
- # filter((forest_pct >= 0.50) |(fortyp_pct >= 0.50)) %>%
+ # these are gridcells where that type is overwhelmingly dominant
  filter(fortyp_pct > 0.50) %>%
  # select the columns we need for modeling
  select(grid_index, grid_idx, Fire_ID, fire_acres, # ID columns
@@ -390,7 +386,7 @@ da %>%
 #################################################
 # Subset species with too few observations
 print("Dropping small classes:")
-small_spps <- c("gambel_oak","douglas_fir","white_fir")
+small_spps <- c("gambel_oak","white_fir")
 print(dim(da%>%filter(fortypnm_gp %in% small_spps)))[1]
 da <- da %>%
  filter(!fortypnm_gp %in% small_spps) %>%
@@ -403,7 +399,7 @@ grid <- st_read(paste0(maindir,"data/spatial/mod/VIIRS/viirs_snpp_jpss1_afd_latl
 grid <- da %>%
  left_join(grid %>% select(grid_index, geom), by="grid_index") %>%
  st_as_sf(.)
-st_write(grid,paste0(maindir,"data/spatial/mod/grid_model_data.gpkg"), append=F)
+st_write(grid,paste0(maindir,"data/spatial/mod/grid_model_data_predom.gpkg"), append=F)
 
 # Tidy up!
 rm(grid, grid_tm, grid_counts, idx)
@@ -1333,11 +1329,11 @@ fortyp_marginals <- tidy_combined %>%
  mutate(forest_type = str_remove(parameter, "fortypnm_gp"),
         forest_type = recode(
          forest_type,
-         "mixed_conifer" = "Mixed Conifer",
+         "douglas_fir" = "Douglas-fir",
          "lodgepole_pine" = "Lodgepole pine",
          "ponderosa_pine" = "Ponderosa pine",
-         "spruce_fir" = "Spruce-Fir",
-         "piñon_juniper" = "Piñon-Juniper"
+         "spruce_fir" = "Spruce-fir",
+         "piñon_juniper" = "Piñon-juniper"
         ))
  
 
