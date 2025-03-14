@@ -36,6 +36,7 @@ firesheds.noaspen <- firesheds %>%
 dim(firesheds.noaspen)
 
 
+##################################
 # select numeric variables for SOM
 X <- firesheds %>%
  st_drop_geometry() %>%
