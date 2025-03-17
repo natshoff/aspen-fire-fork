@@ -44,16 +44,8 @@ fp <- paste0(maindir,'data/tabular/mod/gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
 grid_tm <-  read_csv(fp) %>% # read in the file
  # join in some of the fire information
  left_join(fires, by="Fire_ID") %>%
- # do some filtering of grids
- filter(
-  # day_count > 0, # only consider grids with some daytime observations
-  CBIbc_p90 > 0, # and CBI 0 -> these are often boundary grids
- ) %>%  
  # create a numeric fire ID
  mutate(
-  # create a new unique identifier
-  grid_idx = paste0(Fire_ID, grid_index),
-  grid_idx = as.numeric(as.factor(grid_idx)),
   # tidy the temporal fields
   fire_ig_dt = as.Date(fire_ig_dt),  
   fire_year = year(fire_ig_dt),              
@@ -94,6 +86,11 @@ grid_tm <-  read_csv(fp) %>% # read in the file
   forest_pct = forest_pct / 100,
   fire_aspenpct = fire_aspenpct / 100,
   ) %>%
+ # do some filtering of grids
+ filter(
+  frp_csum > 0, # make sure we have some frp
+  CBIbc_p90 > 0, # and CBI 0 -> these are often boundary grids
+ ) %>%
  group_by(Fire_ID) %>%
  mutate(aspen = ifelse(any(fortypnm_gp == "quaking_aspen"), 1, 0)) %>%
  ungroup() %>%
@@ -111,16 +108,9 @@ dim(grid_tm %>% filter(forest_pct > 0.50))[1]/dim(grid_tm)[1]
 summary(grid_tm$day_prop)
 dim(grid_tm %>% filter(day_prop > 0.50))[1]
 
-# check the FRP stats
-summary(grid_tm$log_frp_csum)
-summary(grid_tm$log_frp_csum_day)
-summary(grid_tm$log_frp_max)
-summary(grid_tm$log_frp_max_day)
-
-
 # Remove duplicate "grid_index"
 # These are reburns ... while interesting, out of scope
-duplicate_grids <- grid_tm %>%
+dup_grids <- grid_tm %>%
  group_by(grid_index) %>%
  filter(n() > 1) %>%
  arrange(grid_index, Fire_ID)
@@ -134,25 +124,27 @@ duplicate_grids <- grid_tm %>%
 # rm(grid)
 # gc()
 
-# filter these out
-idx <- duplicate_grids %>% pull(grid_index)
-grid_tm <- grid_tm %>% 
- filter(!grid_index %in% idx)
-rm(idx, duplicate_grids)
-
-# calculate the dominant forest type for the fire
-# this is the single majority forest type
-dom_fortyp <- grid_tm %>%
- group_by(Fire_ID) %>%
- count(fortypnm_gp) %>%
- slice_max(n, n = 1, with_ties = FALSE) %>%
- rename(fire_dfortyp = fortypnm_gp)
-# join back to grid_tm
+dup_idx <- unique(dup_grids$grid_index)
 grid_tm <- grid_tm %>%
- left_join(dom_fortyp, by = "Fire_ID") %>%
- mutate(fire_dfortyp_int = as.factor(interaction(Fire_ID, fire_dfortyp)))
-head(grid_tm %>% select(Fire_ID, fortypnm_gp, fire_dfortyp, fire_dfortyp_int))
-rm(dom_fortyp)
+ filter(!grid_index %in% dup_idx)
+print(paste0(
+ "Removed [",dim(dup_grids)[1],"] duplicate gridcells."
+))
+rm(dup_grids, dup_idx) # tidy up
+
+# # calculate the dominant forest type for the fire
+# # this is the single majority forest type
+# dom_fortyp <- grid_tm %>%
+#  group_by(Fire_ID) %>%
+#  count(fortypnm_gp) %>%
+#  slice_max(n, n = 1, with_ties = FALSE) %>%
+#  rename(fire_dfortyp = fortypnm_gp)
+# # join back to grid_tm
+# grid_tm <- grid_tm %>%
+#  left_join(dom_fortyp, by = "Fire_ID") %>%
+#  mutate(fire_dfortyp_int = as.factor(interaction(Fire_ID, fire_dfortyp)))
+# head(grid_tm %>% select(Fire_ID, fortypnm_gp, fire_dfortyp, fire_dfortyp_int))
+# rm(dom_fortyp)
 
 
 
@@ -189,51 +181,52 @@ rm(dom_fortyp)
 # rm(resp_plot)
 
 
-####################
-# correlation matrix
-# Select only numeric columns and convert factors to dummy variables
-# this correlation matrix is for this simple model (i.e., not forest composition)
-cor_da <- grid_tm %>%
- select(
-  fortypnm_gp, fire_acres, # forest type (factor)
-  forest_pct, fortyp_pct, # forest and forest type percent
-  canopypct_mean, balive_sum, # grid-level mean canopy percent and balive
-  lf_forest_cc_mean, lf_forest_ch_mean, # LANDFIRE canopy cover and height
-  erc, erc_dv, vpd, vpd_dv, # climate
-  fm1000, fm1000_dv, rmin, rmin_dv, # climate
-  tmmx, tmmx_dv, vs, vs_dv, #climate
-  elev, slope, tpi, chili,  # topography
-  fire_aspenpct, aspen, # fire-level aspen percent
-  overlap, day_prop, afd_count # VIIRS detections information
- ) %>%
- pivot_wider(
-  names_from = fortypnm_gp,
-  values_from = fortyp_pct,
-  values_fill = 0) %>%
- mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
+# ####################
+# # correlation matrix
+# # Select only numeric columns and convert factors to dummy variables
+# # this correlation matrix is for this simple model (i.e., not forest composition)
+# cor_da <- grid_tm %>%
+#  select(
+#   fortypnm_gp, fire_acres, # forest type (factor)
+#   forest_pct, fortyp_pct, # forest and forest type percent
+#   canopypct_mean, balive_sum, # grid-level mean canopy percent and balive
+#   lf_forest_cc_mean, lf_forest_ch_mean, # LANDFIRE canopy cover and height
+#   erc, erc_dv, vpd, vpd_dv, # climate
+#   fm1000, fm1000_dv, rmin, rmin_dv, # climate
+#   tmmx, tmmx_dv, vs, vs_dv, #climate
+#   elev, slope, tpi, chili,  # topography
+#   fire_aspenpct, aspen, # fire-level aspen percent
+#   overlap, day_prop, afd_count # VIIRS detections information
+#  ) %>%
+#  pivot_wider(
+#   names_from = fortypnm_gp,
+#   values_from = fortyp_pct,
+#   values_fill = 0) %>%
+#  mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
+# 
+# # Compute correlation matrix
+# cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
+# 
+# # Plot correlation matrix
+# cor_plot <- ggcorrplot(
+#  cor_mat,
+#  method = "circle",  # Circle or square for visualization
+#  type = "lower",  # Lower triangle of the correlation matrix
+#  lab = TRUE,  # Show correlation values
+#  lab_size = 3,
+#  tl.cex = 10,  # Text label size
+#  colors = c("blue", "white", "red")  # Color gradient
+# )
+# cor_plot
+# 
+# rm(cor_da, cor_mat)
+# gc()
+# 
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_Fortyp.png')
+# ggsave(out_png, plot = cor_plot, dpi=500, bg = 'white')
+# rm(cor_plot)
 
-# Compute correlation matrix
-cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
-
-# Plot correlation matrix
-cor_plot <- ggcorrplot(
- cor_mat,
- method = "circle",  # Circle or square for visualization
- type = "lower",  # Lower triangle of the correlation matrix
- lab = TRUE,  # Show correlation values
- lab_size = 3,
- tl.cex = 10,  # Text label size
- colors = c("blue", "white", "red")  # Color gradient
-)
-cor_plot
-
-rm(cor_da, cor_mat)
-gc()
-
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_Fortyp.png')
-ggsave(out_png, plot = cor_plot, dpi=500, bg = 'white')
-rm(cor_plot)
 
 
 #===========MODEL SETUP==============#
@@ -268,7 +261,8 @@ da <- grid_tm %>%
  # keep only grids where predominant species cover at least 50%
  # and forest percent is greater than 50%
  # these are gridcells where that type is overwhelmingly dominant
- filter(fortyp_pct > 0.50) %>%
+ # filter(fortyp_pct > 0.33) %>%
+ filter(forest_pct >= 0.50) %>%
  # select the columns we need for modeling
  select(grid_index, grid_idx, Fire_ID, fire_acres, # ID columns
         day_prop, overlap, afd_count, # proportion daytime observations and percent detection overlap
@@ -277,13 +271,14 @@ da <- grid_tm %>%
         log_frp_csum, log_frp_csum_day, # FRP response variables
         CBIbc_p90, CBIbc_p95, CBIbc_p99, CBIbc_mean, # CBI response variables
         fortypnm_gp, fortyp_pct, forest_pct, # forest type and percent cover
-        fire_dfortyp, fire_dfortyp_int, # fire-level dominant forest type
+        # fire_dfortyp, fire_dfortyp_int, # fire-level dominant forest type
         canopypct_mean, balive_sum, # canopy percent and total live basal area
+        ba_dead_total, tpp_dead_total, # dead metrics
         lf_forest_cc_mean, lf_forest_ch_mean, # LANDFIRE canopy cover and height
         erc, erc_dv, vpd, vpd_dv, # climate
         fm1000, fm1000_dv, rmin, rmin_dv, # climate
         tmmx, tmmx_dv, vs, vs_dv, #climate
-        elev, slope, tpi, chili, # topography
+        elev, slope, tpi, chili, aspect, # topography
         x, y, # grid centroid coordinate for spatial fields model
         H_tpp, H_ba, # diversity
         aspen, fire_aspenpct # fire-level aspen percent/presence 
@@ -298,7 +293,7 @@ da <- grid_tm %>%
     erc, vpd, vpd_dv, erc_dv, # climate
     fm1000, fm1000_dv, rmin, rmin_dv, # climate
     tmmx, tmmx_dv, vs, vs_dv, #climate
-    elev, slope, tpi, chili, # topography
+    elev, slope, tpi, chili, aspect, # topography
     H_tpp, H_ba, # diversity
     fire_aspenpct # fire-level aspen percent
    ),
@@ -322,33 +317,28 @@ rm(grid_tm,qt)
 gc()
 
 
-########################################################
-# Check on the grid cell counts for daytime observations
-# After filtering, make sure we have enough grids per fire
-grid_counts <- da %>%
+##########################################
+# filter fires with not enough gridcells #
+# check on the grid cell counts
+gridcell_counts <- da %>%
  distinct(fire_id, grid_idx) %>% # keep only distinct rows
  group_by(fire_id) %>%
- summarise(n_grids = n()) %>%
- ungroup() %>% as_tibble()
-summary(grid_counts$n_grids)
-qt <- quantile(grid_counts$n_grids, probs = seq(.1, .9, by = .1))
-qt
-
-# how many fires have >= 10 grids?
-dim(grid_counts %>% filter(n_grids >= 10))[1]
-# how many fires have >= 50 grids?
-dim(grid_counts %>% filter(n_grids >= 50))[1]
-# how many fires have >= 100 grids?
-dim(grid_counts %>% filter(n_grids >= 100))[1]
-
-# Identify fires with n_grids below the Nth percentile
-idx <- grid_counts %>%
- filter(n_grids < 10) %>%
- pull(fire_id)
-length(idx)
-# filter the data frame to remove these fires
+ summarise(n_gridcells = n())
+# check the distribution
+summary(gridcell_counts$n_gridcells)
+# calculate the quantile distribution
+(qt <- tibble::enframe(
+ round(quantile(gridcell_counts$n_gridcells, probs = seq(.1, .9, by = .1))),
+ name = "qt", value = "val"
+))
+(qt10 = qt[1,]$val) # 10%
+# filter fires below the 10th percentile
 da <- da %>%
- filter(!fire_id %in% idx)
+ group_by(fire_id) %>%
+ filter(n() >= qt10) %>%
+ ungroup()
+# tidy up!
+rm(gridcell_counts,qt)
 
 # check how many grids and fires
 length(unique(da$grid_idx))
@@ -365,32 +355,32 @@ spp_counts <- da %>%
  ungroup()
 spp_counts
 
-# identify species to drop
-small_spps <- spp_counts %>% 
- # (fewer than 100 observations)
- filter(n < 100) %>% 
- pull(fortypnm_gp) # get the names
-print(small_spps)
-# count how many gridcells we are dropping
-print(paste0("Dropping [",dim(da%>%filter(fortypnm_gp %in% small_spps))[1],"] gridcells"))
-# filter these out
-da <- da %>%
- filter(!fortypnm_gp %in% small_spps) %>%
- # reset the factor levels
- mutate(fortypnm_gp = droplevels(fortypnm_gp),
-        fire_dfortyp = droplevels(fire_dfortyp))
-levels(da$fortypnm_gp) # check levels
-
-# save a spatial polygon 
-grid <- st_read(paste0(maindir,"data/spatial/mod/VIIRS/viirs_snpp_jpss1_afd_latlon_fires_pixar_gridstats.gpkg"))
-grid <- da %>%
- left_join(grid %>% select(grid_index, geom), by="grid_index") %>%
- st_as_sf(.)
-st_write(grid,paste0(maindir,"data/spatial/mod/grid_model_data_predom.gpkg"), append=F)
-
-# Tidy up!
-rm(grid, grid_counts, idx, spp_counts)
-gc()
+# # identify species to drop
+# small_spps <- spp_counts %>% 
+#  # (fewer than 100 observations)
+#  filter(n < 100) %>% 
+#  pull(fortypnm_gp) # get the names
+# print(small_spps)
+# # count how many gridcells we are dropping
+# print(paste0("Dropping [",dim(da%>%filter(fortypnm_gp %in% small_spps))[1],"] gridcells"))
+# # filter these out
+# da <- da %>%
+#  filter(!fortypnm_gp %in% small_spps) %>%
+#  # reset the factor levels
+#  mutate(fortypnm_gp = droplevels(fortypnm_gp),
+#         fire_dfortyp = droplevels(fire_dfortyp))
+# levels(da$fortypnm_gp) # check levels
+# 
+# # save a spatial polygon 
+# grid <- st_read(paste0(maindir,"data/spatial/mod/VIIRS/viirs_snpp_jpss1_afd_latlon_fires_pixar_gridstats.gpkg"))
+# grid <- da %>%
+#  left_join(grid %>% select(grid_index, geom), by="grid_index") %>%
+#  st_as_sf(.)
+# st_write(grid,paste0(maindir,"data/spatial/mod/grid_model_data_predom.gpkg"), append=F)
+# 
+# # Tidy up!
+# rm(grid, grid_counts, idx, spp_counts)
+# gc()
 
 
 
@@ -410,11 +400,13 @@ levels(da$aspen)
 
 # Set up the model formula
 mf.frp <- log_frp_csum ~ 1 + # cumulative FRP
- fortypnm_gp + # predominant (majority) forest species
+ fortypnm_gp + # predominant (majority) forest type
+ fortypnm_gp:fortyp_pct + # interaction with forest type cover
  lf_canopypct + # gridcell mean canopy percent
- H_tpp + # abundance-based diversity
+ H_ba + # gridcell diversity (basal area)
+ ba_dead_total + # proportion live/dead basal area
  erc_dv + vpd + vs + # climate/weather
- elev + slope + tpi + # topography
+ elev + slope + aspect + tpi + # topography
  overlap + # gridcell VIIRS overlap (sum)
  day_prop + # gridcell proportion of daytime detections 
  aspen # fire-level aspen presence
@@ -427,7 +419,7 @@ ml.frp <- inla(
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.family = list(
   # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
  control.inla = list(strategy = "laplace", int.strategy = "grid")
@@ -447,7 +439,7 @@ mf.frp.re <- update(
  mf.frp, . ~ . + 
   f(first_obs_date, model = "iid", 
     hyper = list(
-     prec = list(prior = "pc.prec", param = c(1, 0.5))
+     prec = list(prior = "pc.prec", param = c(1, 0.1))
    )) # temporal random effect
 )
 # fit the model                     
@@ -476,7 +468,7 @@ mf.frp.re2 <- update(
  mf.frp.re, . ~ . + 
   f(fire_id, model = "iid", 
     hyper = list(
-     prec = list(prior = "pc.prec", param = c(1, 0.5))
+     prec = list(prior = "pc.prec", param = c(1, 0.1))
   )) # fire-level random effect
 )
 # fit the model                     
@@ -487,7 +479,7 @@ ml.frp.re2 <- inla(
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.family = list(
   # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
  control.inla = list(strategy = "laplace", int.strategy = "grid")
@@ -511,73 +503,73 @@ coords <- grid_sf %>% st_coordinates(.)
 st_write(grid_sf, paste0(maindir,"data/spatial/mod/model_grid_centroids.gpkg"),
          append = F)
 
-##########################################################
-# fit a semivariogram to look at spatial dependence in FRP
-##########################################################
-
-# reproject
-sp <-  grid_sf %>%
- st_transform(st_crs(5070))
-
-# Function to compute semivariogram for each fire
-get_fire_vario <- function(fire_id, data) {
- fire_sp <- data %>% filter(fire_id == !!fire_id)
- 
- if (nrow(fire_sp) > 10) {  # Only compute if there are enough points
-  vario <- variogram(log_frp_csum ~ 1, data = fire_sp)
-  vario <- vario %>% mutate(fire_id = fire_id)  # Ensure fire_id is added correctly
-  print(paste("Computed variogram for fire:", fire_id, "with", nrow(fire_sp), "points"))
-  return(vario)
- } else {
-  print(paste("Skipping fire:", fire_id, "- Not enough points"))
-  return(NULL)
- }
-}
-
-# Apply to each fire separately
-fires <- unique(sp$fire_id)
-variograms <- lapply(fires, get_fire_vario, data = sp)
-variograms <- do.call(rbind, variograms)  # Combine results
-
-# Check if fire_id is still in the dataset
-print(unique(variograms$fire_id))
-
-# Plot variograms grouped by Fire ID
-ggplot(variograms, aes(x = dist, y = gamma, 
-                group = fire_id, color = fire_id)) +
- geom_line(alpha = 0.3, size=0.9) +  # Light transparency to see overlap
- labs(x = "Distance (meters)", y = "Semivariance", 
-      title = "Semivariograms for Individual Fires") +
- theme_minimal() +
- theme(legend.position = "none")
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_Fire_SemiVariograms_FRP.png')
-ggsave(out_png, dpi=500, bg = 'white')
-
-# Find the approximate range (where semivariance plateaus) for each fire
-range_est <- variograms %>%
- group_by(fire_id) %>%
- summarize(range_m = max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE))  # 90% of max
-qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1))
-qt
-
-# Compute and print the mean spatial range for FRP
-mean_range_frp <- mean(range_est$range_m, na.rm = TRUE)
-print(paste("Mean spatial range for FRP:", round(mean_range_frp, 2), "meters"))
-
-# Histogram of estimated spatial ranges
-ggplot(range_est, aes(x = range_m)) +
- geom_histogram(bins = 20, fill = "blue", alpha = 0.6) +
- labs(x = "Estimated Range (meters)", y = "Count",
-      title = "Distribution of Within-Fire Spatial Correlation Ranges") +
- theme_minimal()
-
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_Fire_EstimatedRange_FRP.png')
-ggsave(out_png, dpi=500, bg = 'white')
-
-rm(sp, range_est, variograms)
-gc()
+# ##########################################################
+# # fit a semivariogram to look at spatial dependence in FRP
+# ##########################################################
+# 
+# # reproject
+# sp <-  grid_sf %>%
+#  st_transform(st_crs(5070))
+# 
+# # Function to compute semivariogram for each fire
+# get_fire_vario <- function(fire_id, data) {
+#  fire_sp <- data %>% filter(fire_id == !!fire_id)
+#  
+#  if (nrow(fire_sp) > 10) {  # Only compute if there are enough points
+#   vario <- variogram(log_frp_max ~ 1, data = fire_sp)
+#   vario <- vario %>% mutate(fire_id = fire_id)  # Ensure fire_id is added correctly
+#   print(paste("Computed variogram for fire:", fire_id, "with", nrow(fire_sp), "points"))
+#   return(vario)
+#  } else {
+#   print(paste("Skipping fire:", fire_id, "- Not enough points"))
+#   return(NULL)
+#  }
+# }
+# 
+# # Apply to each fire separately
+# fires <- unique(sp$fire_id)
+# variograms <- lapply(fires, get_fire_vario, data = sp)
+# variograms <- do.call(rbind, variograms)  # Combine results
+# 
+# # Check if fire_id is still in the dataset
+# print(unique(variograms$fire_id))
+# 
+# # Plot variograms grouped by Fire ID
+# ggplot(variograms, aes(x = dist, y = gamma, 
+#                 group = fire_id, color = fire_id)) +
+#  geom_line(alpha = 0.3, size=0.9) +  # Light transparency to see overlap
+#  labs(x = "Distance (meters)", y = "Semivariance", 
+#       title = "Semivariograms for Individual Fires") +
+#  theme_minimal() +
+#  theme(legend.position = "none")
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_Fire_SemiVariograms_FRP.png')
+# ggsave(out_png, dpi=500, bg = 'white')
+# 
+# # Find the approximate range (where semivariance plateaus) for each fire
+# range_est <- variograms %>%
+#  group_by(fire_id) %>%
+#  summarize(range_m = max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE))  # 90% of max
+# qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1))
+# qt
+# 
+# # Compute and print the mean spatial range for FRP
+# mean_range_frp <- mean(range_est$range_m, na.rm = TRUE)
+# print(paste("Mean spatial range for FRP:", round(mean_range_frp, 2), "meters"))
+# 
+# # Histogram of estimated spatial ranges
+# ggplot(range_est, aes(x = range_m)) +
+#  geom_histogram(bins = 20, fill = "blue", alpha = 0.6) +
+#  labs(x = "Estimated Range (meters)", y = "Count",
+#       title = "Distribution of Within-Fire Spatial Correlation Ranges") +
+#  theme_minimal()
+# 
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_Fire_EstimatedRange_FRP.png')
+# ggsave(out_png, dpi=500, bg = 'white')
+# 
+# rm(sp, range_est, variograms)
+# gc()
 
 
 ###################################################
@@ -589,8 +581,8 @@ coords_mat <- as.matrix(coords)
 # Define the spatial mesh
 mesh <- inla.mesh.2d(
  loc = coords_mat, # Locations (grid centroids)
- max.edge = c(2, 20), # Maximum edge lengths (inner and outer)
- cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
+ max.edge = c(1, 20), # Maximum edge lengths (inner and outer)
+ cutoff = 0.008, # Minimum distance between points (0.01deg = ~1.1km)
  offset = c(0.5, 0.1) # Boundary buffer
 )
 # Plot mesh to check
@@ -598,34 +590,34 @@ plot(mesh, main = "SPDE Mesh for FRP Model")
 points(coords, col = "red", pch = 20)
 
 
-###################################################
-# Save a spatial file of the mesh grid and vertices
-###################################################
-
-####### Save the mesh as spatial objects
-# Convert INLA mesh vertices to an sf object
-mesh_v <- data.frame(mesh$loc) # Extract coordinates
-colnames(mesh_v) <- c("x", "y") # set column names
-mesh_sf <- st_as_sf(mesh_v, coords = c("x", "y"), crs = 4326)
-# Export vertices to a gpkg
-st_write(mesh_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_vertices.gpkg"), 
-         layer = "mesh_vertices", driver = "GPKG", append=FALSE)
-# Function to convert triangles to polygons
-mesh_t <- mesh$graph$tv  # Triangle indices
-tri_coords <- mesh$loc  # Mesh coordinates
-# Create list of polygons
-poly_list <- lapply(1:nrow(mesh_t), function(i) {
- coords <- tri_coords[mesh_t[i, ], ]
- coords <- rbind(coords, coords[1, ])  # Close the polygon
- st_polygon(list(coords))
-})
-# Convert to sf object
-mesh_poly_sf <- st_sfc(poly_list, crs = 4326) %>% st_sf(geometry = .)
-# Export mesh triangles to GPKG
-st_write(mesh_poly_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_triangles.gpkg"), 
-         layer = "mesh_triangles", driver = "GPKG", append=FALSE)
-rm(mesh_v, mesh_sf, mesh_t, tri_coords, poly_list, mesh_poly_sf)
-gc()
+# ###################################################
+# # Save a spatial file of the mesh grid and vertices
+# ###################################################
+# 
+# ####### Save the mesh as spatial objects
+# # Convert INLA mesh vertices to an sf object
+# mesh_v <- data.frame(mesh$loc) # Extract coordinates
+# colnames(mesh_v) <- c("x", "y") # set column names
+# mesh_sf <- st_as_sf(mesh_v, coords = c("x", "y"), crs = 4326)
+# # Export vertices to a gpkg
+# st_write(mesh_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_vertices.gpkg"), 
+#          layer = "mesh_vertices", driver = "GPKG", append=FALSE)
+# # Function to convert triangles to polygons
+# mesh_t <- mesh$graph$tv  # Triangle indices
+# tri_coords <- mesh$loc  # Mesh coordinates
+# # Create list of polygons
+# poly_list <- lapply(1:nrow(mesh_t), function(i) {
+#  coords <- tri_coords[mesh_t[i, ], ]
+#  coords <- rbind(coords, coords[1, ])  # Close the polygon
+#  st_polygon(list(coords))
+# })
+# # Convert to sf object
+# mesh_poly_sf <- st_sfc(poly_list, crs = 4326) %>% st_sf(geometry = .)
+# # Export mesh triangles to GPKG
+# st_write(mesh_poly_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_triangles.gpkg"), 
+#          layer = "mesh_triangles", driver = "GPKG", append=FALSE)
+# rm(mesh_v, mesh_sf, mesh_t, tri_coords, poly_list, mesh_poly_sf)
+# gc()
 
 
 ########################################
@@ -639,9 +631,9 @@ spde.ml <- inla.spde2.pcmatern(
  mesh = mesh, 
  alpha = 2,
  # P(practic.range < 0.3) = 0.5
- prior.range = c(0.1, 0.5),
+ prior.range = c(0.2, 0.5),
  # P(sigma > 1) = 0.01
- prior.sigma = c(1, 0.5) # variance
+ prior.sigma = c(1, 0.1) # variance
 )
 
 # Compute the projector matrix (A)
@@ -667,10 +659,9 @@ str(field.idx)
 # Create a data frame for the predictors
 # baseline model includes predominant forest type, climate, and topography
 X <- da %>% 
- select(fire_id, first_obs_date, fire_doy, 
-        forest_pct, fortyp_pct, fortypnm_gp, lf_canopypct, 
-        erc_dv, vpd, vs, slope, tpi, chili, elev, H_tpp, H_ba,
-        aspen, day_prop, overlap, afd_count)
+ select(fire_id, first_obs_date, forest_pct, fortyp_pct, fortypnm_gp, lf_canopypct, 
+        erc_dv, vpd, vs, slope, aspect, tpi, chili, elev, H_tpp, H_ba,
+        aspen, day_prop, overlap, afd_count, ba_dead_total)
 head(X)
 
 # Create the INLA data stack
@@ -873,10 +864,10 @@ ggsave(out_png, dpi=500, bg = 'white')
 # Set up the model formula
 mf.cbi <- CBIbc_p90 ~ 
  fortypnm_gp + # predominant forest type
+ fortypnm_gp:fortyp_pct + # by percent cover
  lf_canopypct + # grid-level mean canopy percent
- H_tpp + # abundance-based diversity
  erc_dv + vpd + vs + # climate/weather
- elev + slope + tpi + # topography
+ elev + slope + aspect + tpi + # topography
  aspen # fire-level aspen presence
 
 # fit the model                     
@@ -887,7 +878,7 @@ ml.cbi <- inla(
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.family = list(
   # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
  control.inla = list(strategy = "laplace", int.strategy = "grid")
@@ -904,7 +895,7 @@ mean(ml.cbi$cpo$cpo, na.rm = TRUE)
 mf.cbi.re <- update(
  mf.cbi, . ~ 1 + . + 
   f(first_obs_date, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
     ) # temporal random effect
 )
 # fit the model                     
@@ -915,7 +906,7 @@ ml.cbi.re <- inla(
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.family = list(
   # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
  control.inla = list(strategy = "laplace", int.strategy = "grid")
@@ -932,7 +923,7 @@ mean(ml.cbi.re$cpo$cpo, na.rm = TRUE)
 mf.cbi.re2 <- update(
  mf.cbi.re, . ~ 1 + . + 
   f(fire_id, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+    hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
     ) # fire-level random effect
 )
 # fit the model                     
@@ -943,7 +934,7 @@ ml.cbi.re2 <- inla(
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
  control.family = list(
   # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
  control.inla = list(strategy = "laplace", int.strategy = "grid")
@@ -1043,7 +1034,7 @@ coords_mat <- as.matrix(coords)
 # Define the spatial mesh
 mesh <- inla.mesh.2d(
  loc = coords_mat, # Locations (grid centroids)
- max.edge = c(2, 20), # Maximum edge lengths (inner and outer)
+ max.edge = c(1, 20), # Maximum edge lengths (inner and outer)
  cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
  offset = c(0.5, 0.1) # Boundary buffer
 )
@@ -1061,7 +1052,7 @@ spde.ml <- inla.spde2.pcmatern(
  # P(practic.range < 0.3) = 0.5
  prior.range = c(0.1, 0.5),
  # P(sigma > 1) = 0.01
- prior.sigma = c(1, 0.5) # variance
+ prior.sigma = c(1, 0.1) # variance
 )
 
 # Compute the projector matrix (A)
@@ -1089,7 +1080,7 @@ str(field.idx)
 X <- da %>% 
  select(fire_id, first_obs_date, forest_pct, fortyp_pct, 
         fortypnm_gp, lf_canopypct, erc_dv, vpd, vs, H_tpp, H_ba,
-        elev, slope, tpi, chili, aspen)
+        elev, slope, aspect, tpi, chili, aspen, ba_dead_total)
 head(X)
 
 # Create the INLA data stack
@@ -1121,7 +1112,7 @@ ml.cbi.re.sp <- inla(
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
  control.family = list(
   # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
  control.inla = list(strategy = "laplace", int.strategy = "grid")
@@ -1228,7 +1219,8 @@ gc()
 # FRP
 frp.eff <- as.data.frame(ml.frp.re.sp$summary.fixed) %>%
  rownames_to_column(var = "parameter") %>%
- filter(grepl("fortypnm_gp", parameter)) %>%
+ filter(str_detect(parameter, "fortypnm_gp"),
+        !str_detect(parameter, ":fortyp_pct")) %>%
  mutate(
   response = "FRP",
   forest_type = gsub("fortypnm_gp", "", parameter),
@@ -1237,11 +1229,12 @@ frp.eff <- as.data.frame(ml.frp.re.sp$summary.fixed) %>%
   upper = `0.975quant`
  )
 
-#####
-# CBI
+#######
+# CBI #
 cbi.eff <- as.data.frame(ml.cbi.re.sp$summary.fixed) %>%
  rownames_to_column(var = "parameter") %>%
- filter(grepl("fortypnm_gp", parameter)) %>%
+ filter(str_detect(parameter, "fortypnm_gp"),
+        !str_detect(parameter, ":fortyp_pct")) %>%
  mutate(
   response = "CBI",
   forest_type = gsub("fortypnm_gp", "", parameter),
@@ -1301,9 +1294,9 @@ out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects.png')
 ggsave(out_png, dpi=500, bg = 'white')
 
 
-############
-# Ridge plot
-# Extract fixed effect marginals for FRP and CBI
+###############################################
+# Ridge plot of forest type relative to aspen #
+# extract fixed effects for FRP and CBI
 frp_marginals <- ml.frp.re.sp$marginals.fixed
 cbi_marginals <- ml.cbi.re.sp$marginals.fixed
 
@@ -1325,7 +1318,8 @@ tidy_combined <- bind_rows(tidy_frp, tidy_cbi)
 
 # Filter for forest type effects
 fortyp_marginals <- tidy_combined %>%
- filter(str_detect(parameter, "fortypnm_gp")) %>%
+ filter(str_detect(parameter, "fortypnm_gp"),
+        !str_detect(parameter, ":fortyp_pct")) %>%
  mutate(forest_type = str_remove(parameter, "fortypnm_gp"),
         forest_type = recode(
          forest_type,
@@ -1333,19 +1327,14 @@ fortyp_marginals <- tidy_combined %>%
          "lodgepole_pine" = "Lodgepole pine",
          "ponderosa_pine" = "Ponderosa pine",
          "spruce_fir" = "Spruce-fir",
-         "piñon_juniper" = "Piñon-juniper"
-        ))
- 
-
-# Compute mean effect sizes for reordering
-effect_means <- fortyp_marginals %>%
- group_by(forest_type, response) %>%
- summarize(mean_effect = mean(x), .groups = "drop") %>%
- filter(response == "FRP")
-
-fortyp_marginals <- fortyp_marginals %>%
- left_join(effect_means %>% select(forest_type, mean_effect), by = "forest_type") %>%
- mutate(forest_type = fct_reorder(forest_type, mean_effect, .desc = TRUE))
+         "piñon_juniper" = "Piñon-juniper",
+         "gambel_oak" = "Gambel oak",
+         "white_fir" = "White fir"
+        )) %>%
+ group_by(forest_type) %>%
+ mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
+ ungroup() %>%
+ mutate(forest_type = fct_reorder(forest_type, -mean_effect))
 
 # create the plot
 p2 <- ggplot(fortyp_marginals, aes(x = x, y = forest_type, height = y, fill = response)) +
@@ -1366,7 +1355,7 @@ p2 <- ggplot(fortyp_marginals, aes(x = x, y = forest_type, height = y, fill = re
        axis.text.x = element_text(angle = 0, hjust = 0, size=9),
        axis.title.y = element_text(size = 10, margin = margin(r = 12)),
        axis.title.x = element_text(size = 10, margin = margin(t = 12)),
-       legend.position = c(0.18, 0.14),
+       legend.position = c(0.20, 0.25),
        legend.background = element_rect(
         fill = scales::alpha("white", 0.4), 
         color = NA, size = 0.8),
@@ -1378,10 +1367,102 @@ p2
 out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects_Ridge_species.png')
 ggsave(out_png, plot = p2, dpi = 500, width = 7, height = 4, bg = 'white')
 
+##########################################
+# version without gambel oak and white fir 
+p2.1 <- fortyp_marginals %>%
+ filter(!forest_type %in% c("White fir","Gambel oak")) %>%
+ ggplot(., aes(x = x, y = forest_type,
+               height = y, fill = response)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect relative to aspen",
+  y = "Predominant Forest Cover",
+  fill = "Response",
+ ) +
+ scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
+                   labels = c(
+                    "FRP" = "Cumulative FRP",
+                    "CBI" = expression("90"^"th" ~ "Percentile CBI"))) +
+ coord_cartesian(xlim=c(-0.48,0.44)) +
+ theme_classic() +
+ theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+       axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+       axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+       legend.position = c(0.20, 0.25),
+       legend.background = element_rect(
+        fill = scales::alpha("white", 0.4), 
+        color = NA, size = 0.8),
+       legend.title = element_text(size = 9),
+       legend.text = element_text(size = 8))
+p2.1
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects_Ridge_species_v2.png')
+ggsave(out_png, plot = p3.1, dpi = 500, width = 7, height = 4, bg = 'white')
+
+
+#########################################
+# interaction with forest percent cover #
+# Filter for forest type effects
+fortyp_pct_marginals <- tidy_combined %>%
+ filter(str_detect(parameter, ":fortyp_pct")) %>%
+ mutate(forest_type = str_remove(parameter, ":fortyp_pct"),
+        forest_type = recode(
+         forest_type,
+         "douglas_fir" = "Douglas-fir",
+         "lodgepole_pine" = "Lodgepole pine",
+         "ponderosa_pine" = "Ponderosa pine",
+         "spruce_fir" = "Spruce-fir",
+         "piñon_juniper" = "Piñon-juniper",
+         "gambel_oak" = "Gambel oak",
+         "white_fir" = "White fir"
+        )) %>%
+ group_by(forest_type) %>%
+ mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
+ ungroup() %>%
+ mutate(forest_type = fct_reorder(forest_type, -mean_effect))
+
+# create the plot
+p3 <- ggplot(fortyp_pct_marginals, 
+             aes(x = x, y = forest_type, 
+                 height = y, fill = response)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect",
+  y = "Predominant Forest Cover",
+  fill = "Response",
+ ) +
+ scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
+                   labels = c(
+                    "FRP" = "Cumulative FRP",
+                    "CBI" = expression("90"^"th" ~ "Percentile CBI"))) +
+ coord_cartesian(xlim=c(-0.48,0.44)) +
+ theme_classic() +
+ theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+       axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+       axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+       legend.position = c(0.20, 0.25),
+       legend.background = element_rect(
+        fill = scales::alpha("white", 0.4), 
+        color = NA, size = 0.8),
+       legend.title = element_text(size = 9),
+       legend.text = element_text(size = 8))
+p3
+
+# save the plot.
+out_png <- paste0(maindir,'figures/INLA_FORTYPNM_PosteriorEffects_Ridge_species_pct.png')
+ggsave(out_png, plot = p3, dpi = 500, width = 7, height = 4, bg = 'white')
+
+
 
 
 #################################
 # Plot the climate + topo effects
+
 p3 <- tidy_combined %>%
  filter(!parameter %in% c("(Intercept)", "aspen1", "overlap", "day_prop", "afd_count"),
         !str_starts(parameter, "fortyp")) %>%

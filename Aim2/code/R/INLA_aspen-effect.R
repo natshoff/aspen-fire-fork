@@ -153,24 +153,6 @@ grid_tm <- grid_tm %>%
   species_gp_n = droplevels(species_gp_n)
  )
 
-###########################################
-# calculate the shannon index (H) for grids
-# use both BA and TPP to calculate H
-# also calculate an aspen presence column
-shannon <- grid_tm %>%
- group_by(grid_idx) %>%
- mutate(
-  # Replace 0 or NA proportions with a small value to avoid log issues
-  ba_live_pr = ifelse(is.na(ba_live_pr) | ba_live_pr == 0, 1e-6, ba_live_pr),
-  tpp_live_pr = ifelse(is.na(tpp_live_pr) | tpp_live_pr == 0, 1e-6, tpp_live_pr),
- ) %>%
- # Calculate Shannon index components
- summarise(
-  H_ba = -sum(ba_live_pr * log(ba_live_pr), na.rm = TRUE),  # Based on basal area proportions
-  H_tpp = -sum(tpp_live_pr * log(tpp_live_pr), na.rm = TRUE),  # Based on trees per pixel proportions
-  .groups = "drop"
- )
-
 
 #####################################
 # get the grid-level aspen proportion
