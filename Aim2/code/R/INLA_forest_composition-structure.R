@@ -4,7 +4,6 @@ library(tidyverse)
 library(sf) 
 library(INLA) 
 library(ggcorrplot)
-library(lubridate)
 library(ggridges)
 library(reshape2)
 library(spdep)
@@ -12,143 +11,110 @@ library(patchwork)
 library(forcats)
 library(gstat)
 
-
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
 
-# load and tidy the fire data
-fires <- paste0(maindir,"data/spatial/mod/srm_fire_census_2017_to_2023_ics_perims.gpkg")
-fires <- st_read(fires) %>%
- as_tibble() %>%
- rename(
-  fire_ig_dt = DISCOVERY_DATE,
-  fire_acres = ICS_ACRES,
-  fire_aspenpct = Aspen_Pct
- ) %>%
- select(Fire_ID, fire_ig_dt, fire_acres, fire_aspenpct) %>%
+
+#=========Load the Prepped gridcell data=========#
+
+# gridcell_prep.R
+fp <- paste0(maindir,"data/tabular/mod/model_data_cleaned.csv")
+grid_tm <-  read_csv(fp) %>%
+ # prep some of the attributes for modeling
  mutate(
-  Fire_ID = as.numeric(Fire_ID),
-  fire_acres = as.numeric(fire_acres),
-  fire_aspenpct = as.numeric(fire_aspenpct))
-
-
-#=========Prep the grid data=========#
-
-# Format the species composition data frame 
-# (long-format) each grid has rows for species co-occurring with the dominant type
-# climate and topography are summarized at the grid level
-fp <- paste0(maindir,'data/tabular/mod/gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
-grid_tm <-  read_csv(fp)  %>% # read in the file
- select(-'...1') %>%
- # join in some of the fire information
- left_join(fires, by="Fire_ID") %>%
- # remove missing FRP, prep columns
- # Ensure daytime FRP and CBIbc is greater than 0
- filter(
-  frp_csum > 0, # make sure cumulative FRP > 0
-  CBIbc_p90 > 0 # make sure CBI > 0
- ) %>% 
- # create a numeric fire ID
- mutate(
-  # tidy the temporal fields
-  fire_ig_dt = as.Date(fire_ig_dt),  
-  fire_year = year(fire_ig_dt),              
-  fire_month = month(fire_ig_dt),
-  first_obs_date = as.Date(first_obs_date), # the day of first observation
-  first_obs_month = month(first_obs_date), # month of first observation
-  first_obs_doy = as.numeric(lubridate::yday(first_obs_date)),
-  # Create a "season" variable based on the month of first observation
-  season = case_when(
-   first_obs_month %in% c(3, 4, 5) ~ "spring",
-   first_obs_month %in% c(6, 7, 8) ~ "summer",
-   first_obs_month %in% c(9, 10, 11) ~ "fall"
-  ),
-  # Year/season interaction
-  year_season = interaction(fire_year, season, drop = TRUE),
-  # Factorize the temporal attributes
-  season = as.factor(season),
-  fire_year = as.factor(fire_year),
-  year_season = as.factor(year_season),
   first_obs_date = as.factor(first_obs_date),
-  # Format species names consistently
-  fortypnm_gp = str_to_lower(fortypnm_gp),
-  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
-  fortypnm_gp = str_replace_all(fortypnm_gp, " ", "_"),
-  # Format species names consistently
-  species_gp_n = str_to_lower(species_gp_n),
-  species_gp_n = str_replace_all(species_gp_n, "-", "_"),
-  species_gp_n = str_replace_all(species_gp_n, " ", "_"),
-  # make sure factor variables are set for species names
-  fortypnm_gp = factor(fortypnm_gp),
-  species_gp_n = factor(species_gp_n),
-  Fire_ID = factor(Fire_ID),
-  # Proportion of contributing AFD during daytime observations
-  day_prop = day_count / afd_count,
-  # log-scaled response variables
-  log_frp_max = log(frp_max),
-  log_frp_csum = log(frp_csum),
-  log_frp_max_day = log(frp_max_day),
-  log_frp_max_night = log(frp_max_night),
-  log_frp_csum_day = log(frp_csum_day),
-  log_frp_csum_night = log(frp_csum_night),
-  # scale the percentages
-  forest_pct = forest_pct / 100,
-  fire_aspenpct = fire_aspenpct / 100,
-  # create a gridcell-level live/dead proportion
-  ba_ld_pr = ba_dead_total / (ba_live_total + ba_dead_total),
-  tpp_ld_pr = tpp_dead_total / (tpp_live_total + tpp_dead_total),
- ) %>%
- # filter noise in species data
- filter(
-  # # retain at least 50% forested gridcells
-  # (forest_pct > 0.50) &
-  # remove noise from  small species proportions
-  (ba_live_pr > 0.10) # at least 10% of BA or TPP
- ) %>%
- group_by(Fire_ID) %>%
- mutate(aspen = ifelse(any(fortypnm_gp == "quaking_aspen"), 1, 0)) %>%
- ungroup() %>%
- # rename a few of the columns
- rename(
-  dia_live = tree_dia_live,
-  ht_live = tree_ht_live,
-  tm_canopy = canopypct_mean,
-  tm_balive = balive_sum,
-  lf_canopy = lf_forest_cc_mean,
-  lf_height = lf_forest_ch_mean
- ) %>%
- # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_idx, species_gp_n, .keep_all = TRUE) # remove duplicates
-# tidy up
-rm(fires)
+  log_fire_size = log(fire_acres) # log-scale fire size
+ )
+glimpse(grid_tm)
+ 
 
-################################################
-# load and filter the duplicate (reburn) grids #
-fp = paste0(maindir,"data/spatial/mod/gridcell_duplicates.gpkg")
-dup_grids <- st_read(fp)
-dup_idx <- unique(dup_grids$grid_index)
-grid_tm <- grid_tm %>%
- filter(!grid_index %in% dup_idx)
-print(paste0(
- "Removed [",dim(dup_grids)[1],"] duplicate gridcells."
-))
-rm(dup_grids, dup_idx) # tidy up
-
-#############################
-# check how many grids, etc #
+###################################################
+# check how many grids are majority forested, etc #
 print(length(unique(grid_tm$grid_idx))) # unique gridcells
 # percent of gridcells majority forested
 # Check how many grids are > 50% forested
 print(paste0(
  "Percent forested gridcells (>50% forest pixels): ",
  round(dim(grid_tm %>% filter(forest_pct > 0.50) %>% distinct(grid_idx))[1]/
-  dim(grid_tm %>% distinct(grid_idx))[1], 3) * 100, "%"
+        dim(grid_tm %>% distinct(grid_idx))[1], 3) * 100, "%"
 ))
 # retain predominantly forested gridcells ...
 grid_tm <- grid_tm %>%
  filter(forest_pct >= 0.50)
 
+
+###########################################
+# (Optional) filter our re-burn gridcells #
+grid_tm <- grid_tm %>%
+ filter(reburn == "FALSE")
+
+
+##################################################
+# Assess the proportion of live basal area and TPP
+# filter potential noise ...
+# check proportion of live BA and TPP
+(qt.ba <- tibble::enframe(
+ quantile(grid_tm$ba_live_pr, probs = seq(0, 1, by = .1)),
+ name = "qt", value = "val"
+))
+(qt10.ba = qt.ba[2,]$val) # 10%
+# plot the distribution and 10th percentile line
+ggplot(grid_tm, aes(x = ba_live_pr)) +
+ geom_histogram(
+  bins = 30, 
+  fill = "grey", 
+  color="grey40", 
+  alpha = 0.4
+ ) +
+ geom_vline(
+  xintercept = qt10.ba, color = "darkred", linewidth=1, linetype = "dashed"
+ ) +
+ labs(x = "Proportion live basal area", y = "Count") +
+ theme_classic()
+# tpp
+(qt.tpp <- tibble::enframe(
+ quantile(grid_tm$tpp_live_pr, probs = seq(0, 1, by = .1)),
+ name = "qt", value = "val"
+))
+(qt10.tpp = qt.tpp[2,]$val) # 10%
+# plot the distribution and 10th percentile line
+ggplot(grid_tm, aes(x = tpp_live_pr)) +
+ geom_histogram(
+  bins = 30, 
+  fill = "grey", 
+  color="grey40", 
+  alpha = 0.4
+ ) +
+ geom_vline(
+  xintercept = qt10.tpp, color = "darkred", linewidth=1, linetype = "dashed"
+ ) +
+ labs(x = "Proportion tree/pixel", y = "Count") +
+ theme_classic()
+# check percentage of rows below the threshold
+dim(grid_tm %>% filter(
+ ba_live_pr >= qt10.ba &
+  tpp_live_pr >= qt10.tpp
+))[1] / dim(grid_tm)[1]
+
+# filter species contributing less than the 10th percentile
+grid_tm <- grid_tm %>%
+ # filter noise in species data
+ filter(
+  # remove noise from  small species proportions
+  # either tpp or ba over their 10th percentile
+  (ba_live_pr >= qt10.ba | tpp_live_pr >= qt10.tpp)
+ )
+rm(qt.ba, qt.tpp)
+
+###############################
+# check on the species counts #
+grid_tm %>% 
+ group_by(species_gp_n) %>%
+ summarise(n = length(species_gp_n)) %>%
+ arrange(desc(n))
+
 ##########################################
 # filter fires with not enough gridcells #
+# should have at least 10 (?)
 # check on the grid cell counts
 gridcell_counts <- grid_tm %>%
  distinct(Fire_ID, grid_idx) %>% # keep only distinct rows
@@ -162,152 +128,111 @@ summary(gridcell_counts$n_gridcells)
  name = "qt", value = "val"
 ))
 (qt10 = qt[1,]$val) # 10%
-# filter fires below the 10th percentile
-grid_tm <- grid_tm %>%
- group_by(Fire_ID) %>%
- filter(n() >= qt10) %>%
- ungroup()
-# tidy up!
-rm(gridcell_counts,qt)
+# # filter fires below the 10th percentile
+# grid_tm <- grid_tm %>%
+#  group_by(Fire_ID) %>%
+#  filter(n() >= qt10) %>%
+#  ungroup()
+# # tidy up!
+# rm(gridcell_counts,qt)
 
 # check how many grids and fires
 length(unique(grid_tm$grid_idx))
 length(unique(grid_tm$Fire_ID))
 
-###############################
-# check on the species counts #
-grid_tm %>% 
- group_by(species_gp_n) %>%
- summarise(n = length(species_gp_n)) %>%
- arrange(desc(n))
-
-###################################################
-# save a model data frame for visualizations, etc #
-# first, pivot wide for species columns (live basal area)
-grid_tm.w <- grid_tm %>%
- select(
-  grid_idx, fortypnm_gp, species_gp_n, ba_live_pr,
-  log_frp_csum, log_frp_csum_day, log_frp_csum_night,
-  log_frp_max, log_frp_max_day, log_frp_max_night,
-  CBIbc_mean, CBIbc_p90, CBIbc_p95, CBIbc_p99,
-  first_obs_doy, erc_dv, vpd, vs, elev, slope, aspect, tpi,
-  ba_live_total, tpp_live_total, qmd_live_mean,
-  lf_canopy, lf_height, H_tpp, H_ba, overlap, day_prop,
-  tree_ht_live_mean, tree_dia_live_mean, ba_ld_pr, tpp_ld_pr,
-  fortyp_pct, forest_pct, tmid_n
-  ) %>%  
- pivot_wider(
-  names_from = species_gp_n,  
-  values_from = ba_live_pr,   
-  values_fill = 0             
- ) %>%
- left_join(., grid_tm %>% distinct(grid_idx, geometry), by="grid_idx") %>%
- distinct(grid_idx, fortypnm_gp, geometry, .keep_all = T) %>%
- mutate(geometry = st_as_sfc(geometry)) %>%
- st_as_sf(.) %>% st_set_crs(st_crs(5070))
-glimpse(grid_tm.w)
-# save it out.
-out_fp = paste0(maindir,"data/spatial/mod/gridcell_model_data.gpkg")
-grid_tm.w %>% st_write(., out_fp, append=F)
-rm(grid_tm.w)
 
 
-
-#==========EXPLORE THE DATA==========#
-
-#######################################
-# species-specific correlation matrix #
-sp_cor <- grid_tm %>%
- select(grid_idx, species_gp_n, ba_live) %>%
- spread(species_gp_n, ba_live, fill = 0)  # Reshape to wide format
-# compute the correlation matrix
-sp_cormat <- cor(sp_cor[,-1], use = "complete.obs", method = "spearman")
-ggcorrplot(sp_cormat, method = "circle", type = "lower",
-           lab = TRUE, lab_size = 3, colors = c("blue", "white", "red"))
-rm(sp_cor, sp_cormat)
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesBA.png')
-ggsave(out_png, dpi=500, bg = 'white')
-
-########################################
-# correlation matrix for fixed effects #
-cor_da <- grid_tm %>%
- select(
-  # species structure metrics
-  tpp_live, ba_live, qmd_live, ht_live, dia_live,   
-  tpp_live_pr, ba_live_pr, # proportions of TPP and BA
-  ba_live_total, tpp_live_total, qmd_live_mean, # gridcell structural summaries
-  ba_ld_pr, tpp_ld_pr, # live/dead proportions
-  ba_dead_total, tpp_dead_total, # dead BA and TPP
-  forest_pct, fortyp_pct, # gridcell forest percent and majority forest type percent
-  H_ba, H_tpp, # gridcell species diversity (abundance- and dominance-based)
-  erc, erc_dv, vpd, vpd_dv, # day-of-burn climate
-  fm1000, rmin, tmmx, vs, # day-of-burn climate
-  elev, slope, tpi, chili, aspect,  # topography
-  tm_canopy, tm_balive, lf_canopy, lf_height, # gridcell canopy percent/height and BA sum
-  day_prop, overlap, afd_count # VIIRS detection characteristics
- ) %>%
- mutate_if(is.factor, as.numeric)  # Convert factors to numeric (if needed)
-# Compute correlation matrix
-cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
-# Plot correlation matrix
-ggcorrplot(cor_mat, method = "circle",  
- type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,  
- colors = c("blue", "white", "red")  
-)
-rm(cor_da, cor_mat) # tidy up
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_FixedEffects.png')
-ggsave(out_png, dpi=500, bg = 'white')
+# #==========EXPLORE THE DATA==========#
+# 
+# #######################################
+# # species-specific correlation matrix #
+# sp_cor <- grid_tm %>%
+#  select(grid_idx, species_gp_n, ba_live) %>%
+#  spread(species_gp_n, ba_live, fill = 0)  # Reshape to wide format
+# # compute the correlation matrix
+# sp_cormat <- cor(sp_cor[,-1], use = "complete.obs", method = "spearman")
+# ggcorrplot(sp_cormat, method = "circle", type = "lower",
+#            lab = TRUE, lab_size = 3, colors = c("blue", "white", "red"))
+# rm(sp_cor, sp_cormat)
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesBA.png')
+# ggsave(out_png, dpi=500, bg = 'white')
+# 
+# ########################################
+# # correlation matrix for fixed effects #
+# cor_da <- grid_tm %>%
+#  select(
+#   fortypnm_gp,
+#   # species structure metrics
+#   tpp_live, ba_live, qmd_live, ht_live, dia_live,
+#   tpp_live_pr, ba_live_pr, # proportions of TPP and BA
+#   ba_live_total, tpp_live_total, qmd_live_mean, # gridcell structural summaries
+#   ba_ld_pr, tpp_ld_pr, # live/dead proportions
+#   ba_dead_total, tpp_dead_total, # dead BA and TPP
+#   forest_pct, fortyp_pct, # gridcell forest percent and majority forest type percent
+#   H_ba, H_tpp, # gridcell species diversity (abundance- and dominance-based)
+#   erc, erc_dv, vpd, vpd_dv, # day-of-burn climate
+#   fm1000, rmin, tmmx, vs, # day-of-burn climate
+#   elev, slope, tpi, northness,  # topography
+#   tm_canopy, tm_balive, lf_canopy, lf_height, # gridcell canopy percent/height and BA sum
+#   day_prop, overlap, # VIIRS detection characteristics
+#   log_fire_size, dist_to_perim # fire size and distance to perimeter
+#  ) %>%
+#  pivot_wider(
+#   names_from = fortypnm_gp,
+#   values_from = fortyp_pct,
+#   values_fill = 0) %>%
+#  mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
+# 
+# # Compute correlation matrix
+# cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
+# # Plot correlation matrix
+# ggcorrplot(cor_mat, method = "circle",
+#  type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,
+#  colors = c("blue", "white", "red")
+# )
+# rm(cor_da, cor_mat) # tidy up
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_FixedEffects.png')
+# ggsave(out_png, dpi=500, width=12, height=12, bg = 'white')
 
 
 
 #===========MODEL SETUP==============#
 
-#########################################
-# force aspen to be the baseline factor #
-grid_tm <- grid_tm %>%
- mutate(
-  species_gp_n = fct_relevel(species_gp_n, "quaking_aspen"),
-  fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen")
- )
-# check the factor levels
-# make sure aspen is first
-levels(grid_tm$species_gp_n)
-levels(grid_tm$fortypnm_gp)
-
 # prep the model data frame
 # center and scale fixed effects
 da <- grid_tm %>%
  mutate(
+  # force aspen to be the baseline factor #
+  species_gp_n = fct_relevel(species_gp_n, "quaking_aspen"),
+  fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen"),
   # center/scale metrics / fixed effects
   across(
    c(ba_live, tpp_live, qmd_live, ht_live, dia_live, # species structure metrics
      ba_live_pr, tpp_live_pr, # proportion TPP and BA
-     ba_ld_pr, tpp_ld_pr, # proportion dead BA/TPP
      ba_live_total, tpp_live_total, qmd_live_mean, # gridcell structural summaries
      ba_dead_total, tpp_dead_total, # dead structure
      H_ba, H_tpp, # gridcell diversity metrics
      forest_pct, fortyp_pct, # gridcell forest percent and majority forest type percent
      lf_canopy, lf_height, # gridcell forest characteristics
-     erc_dv, vpd, # climate
-     elev, slope, aspect, tpi, # topography
-     day_prop, overlap # VIIRS detection characteristics
+     erc_dv, vpd, vs, # fire weather
+     elev, slope, northness, tpi, # topography
+     day_prop, overlap, # VIIRS detection characteristics
+     dist_to_perim # gridcell distance to perimeter
     ), ~ as.numeric(scale(.))
-  ),
-  log_fire_size = log(fire_acres) # log-scale fire size
+  )
  ) %>%
  # calculate the predominant species by raw BA and TPP
  group_by(grid_idx) %>%
  mutate(
   dom_sp_ba = as.factor(species_gp_n[which.max(ba_live)]),
-  dom_sp_tpp = as.factor(species_gp_n[which.max(tpp_live)]),
-  dom_sp_qmd = as.factor(species_gp_n[which.max(qmd_live)]),
+  dom_sp_tpp = as.factor(species_gp_n[which.max(tpp_live)])
  ) %>%
  ungroup() %>%
  arrange(grid_idx) # arrange by grid index
 rm(grid_tm) # tidy up
-
+gc()
 
 ##################################################
 # check on the dominance/abundance distributions #
@@ -328,7 +253,9 @@ df3 <- da %>%
  df1, df2, by = c("fortypnm_gp" = "dom_sp_ba")) %>%
   full_join(df3, by = c("fortypnm_gp" = "dom_sp_tpp")) %>%
   arrange(desc(n_fortyp)))
-rm(df1,df2,df3)
+# save this table out
+write_csv(sp_dom_summary,paste0(maindir,"data/tabular/mod/results/species_dominance_counts.csv"))
+rm(df1,df2,df3,sp_dom_summary)
 
 ###############################
 # check on the species counts #
@@ -337,14 +264,33 @@ da %>%
  summarise(n = length(species_gp_n)) %>%
  arrange(desc(n))
 
+###############################
+# check on forest type counts #
+fortyp_counts <- da %>%
+ group_by(fortypnm_gp) %>%
+ summarize(n = n()) %>%
+ ungroup()
+fortyp_counts
+
+################################
+# check the mean FRP for aspen #
+# extract all aspen rows
+aspen.df = da%>%filter(fortypnm_gp == "quaking_aspen")
+(aspen_frp_mean = mean(aspen.df$log_frp_csum)) # mean cumulative frp
+(aspen_cbi_mean = mean(aspen.df$CBIbc_p90))
+rm(aspen.df)
+# also grab the mean frp in general
+(mean_frp = mean(da$log_frp_csum))
+(mean_cbi = mean(da$CBIbc_p90))
+
+##################################
+# # (optional) remove gambel oak #
+# da <- da %>%
+#  filter(species_gp_n != "gambel_oak")
+
 
 #===========MODEL FITTING==============#
-
 set.seed(456)
-
-# make aspen presence a factor
-da$aspen <- as.factor(da$aspen)
-levels(da$aspen)
 
 ########################
 # FIRE RADIATIVE POWER #
@@ -354,22 +300,25 @@ levels(da$aspen)
 
 # setup the model formula
 mf.frp <- log_frp_csum ~ 1 + 
- f(fortypnm_gp, model="rw2") + # latent effect for primary forest type
- # fortypnm_gp:fortyp_pct + # majority forest type
- species_gp_n:ba_live + # species live BA
- species_gp_n:tpp_live + # species live BA
- # species_gp_n:qmd_live + # species live QMD
- species_gp_n:ht_live + # species live tree height
- species_gp_n:dia_live + # species live tree diameter
- # fortyp_pct + # percent cover of the dominant forest type
+ # forest composition and structure with mediation by VPD
+ vpd * (fortypnm_gp) + # majority forest type
+ vpd * (fortypnm_gp:fortyp_pct) + # majority forest type by percent cover
+ vpd * (species_gp_n:ba_live) + # species total live basal area
+ vpd * (species_gp_n:ht_live) + # species average live tree height
+ vpd * (species_gp_n:dia_live) + # species average live tree diameter
+ # other fixed effects (global effects)
+ # fortyp_pct + # majority forest type percent
+ lf_canopy + # gridcell forest canopy cover
  H_ba + # gridcell structural diversity (dominance-based)
- lf_canopy + # gridcell forest canopy percent
- ba_dead_total + # proportion live/dead basal area
- erc_dv + vpd + vs + # day-of-burn climate/weather
- elev + slope + aspect + tpi + # topography 
- aspen + # fire-level aspen presence
+ tpp_dead_total + # proportion live/dead basal area
+ tpp_live_total + # total trees/pixel
+ erc_dv + vpd + vs + # day-of-burn fire weather
+ elev + slope + northness + tpi + # topography 
  overlap + # gridcell VIIRS overlap (cumulative)
- day_prop # gridcell proportion daytime detections 
+ day_prop +  # gridcell proportion daytime detections 
+ log_fire_size + # log-scaled fire size
+ reburn + # gridcell re-burn status
+ dist_to_perim # gridcell distance to perimeter
 
 # fit the model
 ml.frp <- inla(
@@ -377,14 +326,16 @@ ml.frp <- inla(
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ # set priors for the fixed effects
  control.family = list(
   # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
+  hyper = list(
+   prec = list(prior = "pc.prec", param = c(1, 0.5)))
  ),
  # controls for posterior approximation and hyperparameter search
- control.inla = list(strategy = "laplace", int.strategy = "grid")
+ control.inla = list(strategy = "laplace", int.strategy = "grid") 
 )
-summary(ml.frp)
+summary(ml.frp) # model summary table
 # check on predictive power of the random effects models
 mean(ml.frp$cpo$cpo, na.rm = TRUE)
 
@@ -395,10 +346,9 @@ mean(ml.frp$cpo$cpo, na.rm = TRUE)
 # update the model formula
 mf.frp.re <- update(
  mf.frp, . ~ 1 + . + 
-  f(Fire_ID, model = "iid", 
-    hyper = list(
-     prec = list(prior = "pc.prec", param = c(1, 0.01))
-    )) 
+  f(Fire_ID, model = "iid", hyper = list(
+     prec = list(prior = "pc.prec", param = c(1, 0.5))
+   )) 
 )
 
 # fit the model
@@ -407,8 +357,9 @@ ml.frp.re <- inla(
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ # set priors for the fixed effects
  control.family = list(
-  # relax the variance assumptions
+  # relax the variance assumptions on gaussian precision
   hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
@@ -425,11 +376,9 @@ mean(ml.frp.re$cpo$cpo, na.rm = TRUE)
 # update the model formula
 mf.frp.re2 <- update(
  mf.frp.re, . ~ 1 + . + 
-  f(first_obs_date, 
-    model = "iid", 
-    hyper = list(
-     prec = list(prior = "pc.prec", param = c(1, 0.01))
-    )) 
+  f(first_obs_date, model = "iid", 
+    hyper = list(prec = list(prior = "pc.prec", param = c(2, 0.5)))
+   ) 
 )
 
 # fit the model
@@ -438,8 +387,9 @@ ml.frp.re2 <- inla(
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+ # set priors for the fixed effects
  control.family = list(
-  # relax the variance assumptions
+  # relax the variance assumptions on gaussian precision
   hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
@@ -450,11 +400,10 @@ summary(ml.frp.re2)
 mean(ml.frp.re2$cpo$cpo, na.rm = TRUE)
 
 
-
 #########################
 # 4. Spatial SPDE model #
 
-# extracting spatial coordinates for grid centroids
+# extract gridcell coordinates
 grid_sf <- da %>%
  arrange(grid_index) %>%
  st_as_sf(., coords = c("x", "y"), crs = 4326)
@@ -462,7 +411,6 @@ grid_sf <- da %>%
 coords <- grid_sf %>% st_coordinates(.)
 # convert coordinates to a matrix for INLA
 coords_mat <- as.matrix(coords) 
-
 
 # ##########################################################
 # # fit a semivariogram to look at spatial dependence in FRP
@@ -475,8 +423,8 @@ coords_mat <- as.matrix(coords)
 # # Function to compute semivariogram for each fire
 # get_fire_vario <- function(Fire_ID, data) {
 #  fire_sp <- data %>% filter(Fire_ID == !!Fire_ID)
-#  
-#  if (nrow(fire_sp) > 10) {  # Only compute if there are enough points
+# 
+#  if (nrow(fire_sp) >= 10) {  # Only compute if there are enough points
 #   vario <- variogram(log_frp_csum ~ 1, data = fire_sp)
 #   vario <- vario %>% mutate(Fire_ID = Fire_ID)  # Ensure fire_id is added correctly
 #   print(paste("Computed variogram for fire:", Fire_ID, "with", nrow(fire_sp), "points"))
@@ -496,10 +444,10 @@ coords_mat <- as.matrix(coords)
 # print(unique(variograms$Fire_ID))
 # 
 # # Plot variograms grouped by Fire ID
-# ggplot(variograms, aes(x = dist, y = gamma, 
+# ggplot(variograms, aes(x = dist, y = gamma,
 #                        group = Fire_ID, color = Fire_ID)) +
 #  geom_line(alpha = 0.3, size=0.9) +  # Light transparency to see overlap
-#  labs(x = "Distance (meters)", y = "Semivariance", 
+#  labs(x = "Distance (meters)", y = "Semivariance",
 #       title = "Semivariograms for Individual Fires") +
 #  theme_minimal() +
 #  theme(legend.position = "none")
@@ -509,9 +457,14 @@ coords_mat <- as.matrix(coords)
 # 
 # # Find the approximate range (where semivariance plateaus) for each fire
 # range_est <- variograms %>%
+#  drop_na() %>%
 #  group_by(Fire_ID) %>%
-#  summarize(range_m = max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE))  # 90% of max
-# qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1))
+#  summarize(
+#   range_m = ifelse(any(gamma < max(gamma) * 0.9, na.rm = TRUE),
+#                    max(dist[gamma < max(gamma) * 0.9], na.rm = TRUE),
+#                    NA_real_)  # Assign NA when no valid values exist
+#  )
+# qt <- quantile(range_est$range_m, probs = seq(.1, .9, by = .1), na.rm=TRUE)
 # qt
 # 
 # # Compute and print the mean spatial range for FRP
@@ -543,9 +496,9 @@ mesh <- inla.mesh.2d(
  cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
  offset = c(0.5, 0.1) # Boundary buffer
 )
-# Plot mesh to check
-plot(mesh, main = "SPDE Mesh for FRP Model")
-points(coords, col = "red", pch = 20)
+# # Plot mesh to check
+# plot(mesh, main = "SPDE Mesh for FRP Model")
+# points(coords, col = "red", pch = 20)
 
 rm(coords)
 gc()
@@ -560,7 +513,7 @@ gc()
 # colnames(mesh_v) <- c("x", "y") # set column names
 # mesh_sf <- st_as_sf(mesh_v, coords = c("x", "y"), crs = 4326)
 # # Export vertices to a gpkg
-# st_write(mesh_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_vertices.gpkg"), 
+# st_write(mesh_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_vertices.gpkg"),
 #          layer = "mesh_vertices", driver = "GPKG", append=FALSE)
 # # Function to convert triangles to polygons
 # mesh_t <- mesh$graph$tv  # Triangle indices
@@ -574,7 +527,7 @@ gc()
 # # Convert to sf object
 # mesh_poly_sf <- st_sfc(poly_list, crs = 4326) %>% st_sf(geometry = .)
 # # Export mesh triangles to GPKG
-# st_write(mesh_poly_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_triangles.gpkg"), 
+# st_write(mesh_poly_sf, paste0(maindir,"data/spatial/mod/INLA_mesh_triangles.gpkg"),
 #          layer = "mesh_triangles", driver = "GPKG", append=FALSE)
 # rm(mesh_v, mesh_sf, mesh_t, tri_coords, poly_list, mesh_poly_sf)
 # gc()
@@ -589,9 +542,9 @@ spde.ml <- inla.spde2.pcmatern(
  mesh = mesh, 
  alpha = 2,
  # P(practic.range < 0.3) = 0.5
- prior.range = c(0.3, 0.5),
+ prior.range = c(0.1, 0.5),
  # P(sigma > 1) = 0.01
- prior.sigma = c(1, 0.01) # variance
+ prior.sigma = c(1, 0.5) # variance
 )
 
 # Compute the projector matrix (A)
@@ -609,16 +562,19 @@ str(field.idx)
 
 # Extract the predictor variables
 X <- da %>% 
- select(Fire_ID, first_obs_date, grid_index, 
-        fortypnm_gp, fortyp_pct, species_gp_n,  
-        tpp_live, tpp_live_pr, ba_live, ba_live_pr,    
-        lf_canopy, H_tpp, H_ba, 
-        ht_live, dia_live, qmd_live, 
-        ba_ld_pr, tpp_ld_pr, ba_dead_total,
-        erc_dv, vpd, vs, 
-        elev, slope, aspect, tpi,
-        aspen, day_prop, overlap)
-head(X)
+ select(
+  Fire_ID, first_obs_date, grid_index, 
+  fortypnm_gp, species_gp_n, 
+  forest_pct, fortyp_pct, lf_canopy, H_tpp, H_ba, 
+  ba_live, tpp_live, ht_live, dia_live, qmd_live, 
+  tpp_live_pr, ba_live_pr, aspen_ba_pr,
+  ba_live_total, ba_dead_total, tpp_live_total, tpp_dead_total,
+  erc_dv, erc, vpd, vpd_dv, vs, 
+  elev, slope, northness, tpi,
+  fire_aspen, grid_aspen,
+  day_prop, overlap, reburn,
+  log_fire_size, dist_to_perim
+ )
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
@@ -644,19 +600,22 @@ mf.frp.re.sp <- update(
 # fit the model
 ml.frp.re.sp <- inla(
  mf.frp.re.sp, 
- data = inla.stack.data(stack.frp), ,
+ data = inla.stack.data(stack.frp),
  family = "gaussian",
  control.predictor = list(A = inla.stack.A(stack.frp), compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+ # set priors for the fixed effects
  control.family = list(
-  # relax the variance assumptions
+  # relax the variance assumptions on gaussian precision
   hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
  ),
  # controls for posterior approximation and hyperparameter search
  control.inla = list(strategy = "laplace", int.strategy = "grid")
 )
+# model summary
 summary(ml.frp.re.sp)
 mean(ml.frp.re.sp$cpo$cpo, na.rm = TRUE)
+
 
 
 #==========EXTRACTING THE SPATIAL EFFECT===========#
@@ -739,16 +698,29 @@ ml_comparison.frp <- tibble(
 # Print the comparison table
 print(ml_comparison.frp)
 
-
 # tidy up !
 rm(A, coords_mat, field.idx, mesh, 
    ml.frp, ml.frp.re, ml.frp.re2, spde.ml, stack.frp)
 gc()
 
 
+#=================MODEL STATEMENTS=================#
+
+# compute the exponentiated effects
+exp.frp <- ml.frp.re.sp$summary.fixed %>%
+ rownames_to_column(var = "parameter") %>%
+ mutate(
+  exp_mean = exp(mean) - 1,  # Convert log(FRP) effect to % difference
+  lower_ci = exp(`0.025quant`) - 1,  # 2.5% CI bound
+  upper_ci = exp(`0.975quant`) - 1   # 97.5% CI bound
+ )
+# save this table
+write_csv(exp.frp, paste0(maindir,"data/tabular/mod/results/INLA_exp_FRP.csv"))
+# check results
+exp.frp%>%select(parameter,exp_mean,lower_ci,upper_ci)
+
 
 #===========POSTERIOR EFFECTS===========#
-
 
 #########################################
 # Plot all of the posterior fixed effects
@@ -762,18 +734,33 @@ tidy.effects.frp <- tibble::tibble(
  unnest(data) %>%
  # Exclude the intercept
  filter(!parameter %in% c(
-  "(Intercept)","aspen","day_prop"
+  "(Intercept)","aspen","day_prop","log_fire_size"
   )
  ) %>%  
  mutate(
   effect = case_when(
    str_detect(parameter, "ba_live") ~ "Live basal area",
    # str_detect(parameter, "ba_live_pr") ~ "Proportion of\nlive basal area",
-   # str_detect(parameter, "tpp_live") ~ "Live trees/pixel",
-   str_detect(parameter, "dia_live") ~ "Live tree diameter",
-   str_detect(parameter, "ht_live") ~ "Live tree height",
+   str_detect(parameter, "tpp_live") ~ "Live trees/pixel",
+   str_detect(parameter, "tpp_dead") ~ "Dead trees/pixel",
+   str_detect(parameter, "dia_live") ~ "Tree diameter",
+   str_detect(parameter, "ht_live") ~ "Tree height",
+   str_detect(parameter, "fortyp_pct") ~ "Percent cover",
    # str_detect(parameter, "qmd_live") ~ "Live QMD",
    # str_detect(parameter, "H_tpp") ~ "Shannon diversity \n(abundance-based)",
+   str_detect(parameter, "vs") ~ "Wind speed",
+   str_detect(parameter, "elev") ~ "Elevation",
+   str_detect(parameter, "northness") ~ "Northness",
+   str_detect(parameter, "slope") ~ "Slope",
+   str_detect(parameter, "H_ba") ~ "Shannon diversity (H-BA)",
+   str_detect(parameter, "tpi") ~ "Topographic position",
+   str_detect(parameter, "lf_canopy") ~ "Forest canopy cover",
+   str_detect(parameter, "erc_dv") ~ "Energy release component\n(15-year deviation)",
+   str_detect(parameter, "erc") ~ "Energy release component",
+   str_detect(parameter, "vpd") ~ "Vapor pressure deficit",
+   str_detect(parameter, "log_fire_size") ~ "log(Fire size)",
+   str_detect(parameter, "dist_to_perim") ~ "Distance to fire edge",
+   str_detect(parameter, "reburn") ~ "Re-burn",
    TRUE ~ parameter  # Default for all other fixed effects
   ),
   # Extract species names from parameters
@@ -818,18 +805,50 @@ tidy.effects.frp <- tidy.effects.frp %>%
    fill_species,
    levels = c("Lodgepole pine", "Douglas-fir", "White fir",
               "Gambel oak", "Piñon-juniper", "Ponderosa pine",
-              "Spruce-fir", "Quaking aspen")))
+              "Spruce-fir", "Quaking aspen"))) %>%
+ mutate(exp_effect = exp(x))
 
 # check on the species name extraction
 unique(tidy.effects.frp$fill_species)
 spps_breaks <- unique(tidy.effects.frp$fill_species)
 
+##########################
+# create the color mapping
+color_map <- c(
+ "Global Effect" = "gray",
+ "Quaking aspen" = "#e6ab02",
+ "Lodgepole pine" = "#d95f02",
+ "Douglas-fir" = "#7570b3",
+ "White fir" = "#a6cee3",
+ "Gambel oak" = "#e7298a",
+ "Piñon-juniper" = "#66a61e",
+ "Ponderosa pine" = "#1b9e77", #1b9e77,
+ "Spruce-fir" = "#1f78b4"
+)
+
+alpha_map <- c(
+ "Quaking aspen" = 0.95,
+ "Lodgepole pine" = 0.2,
+ "Douglas-fir" = 0.2,
+ "White fir" = 0.2,
+ "Gambel oak" = 0.2,
+ "Piñon-juniper" = 0.2,
+ "Ponderosa pine" = 0.2,
+ "Spruce-fir" = 0.2
+)
 
 ###################################
 # Extract the forest type effects #
 fortyp_effects.frp <- tidy.effects.frp %>%
- filter(str_detect(parameter, "fortypnm_gp"),
-        !str_detect(parameter, ":fortyp_pct")) %>%
+ filter(
+  str_detect(parameter, "fortypnm_gp"),
+  !str_detect(parameter, ":fortyp_pct")
+ ) %>%
+ mutate(
+  group = case_when(
+   str_detect(parameter, "vpd:") ~ "VPD-mediated",
+   TRUE ~ "Forest type"  # Default for all other fixed effects
+ )) %>%
  group_by(fill_species) %>%
  mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
  ungroup() %>%
@@ -839,86 +858,76 @@ glimpse(fortyp_effects.frp)
 # make the ridge plot
 frp.p1 <- ggplot(fortyp_effects.frp,
        aes(x = x, y = fill_species, height = y,
-           fill = fill_species)) +
- geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+           fill = group, alpha=group)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, aes(alpha = group)) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
-  x = "Effect Size",
-  y = "Forest Type",
+  x = "Effect relative to aspen",
+  y = "Forest Type"
  ) +
  scale_fill_manual(
   values = c(
-   "Quaking aspen" = "#e6ab02",
-   "Lodgepole pine" = "#d95f02",
-   "Douglas-fir" = "#7570b3",
-   "White fir" = "#a6cee3",
-   "Gambel oak" = "#e7298a",
-   "Piñon-juniper" = "#66a61e",
-   "Ponderosa pine" = "#1b9e77",
-   "Spruce-fir" = "#1f78b4"
+   "VPD-mediated" = "#e6ab02",
+   "Forest type" = "#e6ab02"
+  )
+ ) +
+ scale_alpha_manual(
+  values = c(
+   "VPD-mediated" = 0.2,
+   "Forest type" = 0.98
   )
  ) +
  theme_minimal() +
  theme(
   legend.position = "none",
   axis.text.y = element_text(size = 10),
-  axis.title.y = element_text(size = 12)
+  axis.title.y = element_text(size = 11)
  )
 frp.p1
 
 
 #######################################################
 # create the ridge plot for species structure metrics #
+# no VPD-mediation
+# set the order for parameters
+param_order <- c("Tree diameter","Tree height",
+                 "Live basal area","Percent cover")
+# filter to structure effects
 sp_effects.frp <- tidy.effects.frp %>%
- filter(str_detect(parameter, "species_gp_n"))
+ filter(effect %in% param_order,
+        !str_detect(parameter, "vpd"))
 
 # plot it
 frp.p2 <- sp_effects.frp %>%
+ mutate(effect = factor(effect, levels = param_order)) %>%
  ggplot(., aes(x = x, y = effect, 
                height = y, fill = fill_species, 
                alpha = fill_species)) +
  geom_density_ridges(
-  stat = "identity", scale = 1.5, show.legend=F) +
+  stat = "identity", scale = 1.5, show.legend=F,
+  color = scales::alpha("black", 0.6)) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
   x = "",
   y = "Fixed Effect",
   fill = "Species"
  ) +
- # # add a subplot label
- # annotate("text", x = -0.13, y = 5, 
- #          label = "(A)", fontface = "bold", 
- #          size = 4, hjust = 0) +
+ # add a subplot label
+ annotate("text", x = -0.20, y = 5,
+          label = expression(bold("(A)") ~ "FRPc"),
+          size = 4, hjust = 0) +
  scale_fill_manual(
-  values = c(
-   "Quaking aspen" = "#e6ab02",
-   "Lodgepole pine" = "#d95f02",
-   "Douglas-fir" = "#7570b3",
-   "White fir" = "#a6cee3",
-   "Gambel oak" = "#e7298a",
-   "Piñon-juniper" = "#66a61e",
-   "Ponderosa pine" = "#1b9e77",
-   "Spruce-fir" = "#1f78b4"
-  ),
+  values = color_map,
   # Exclude "Global Effect" from the legend
   breaks = spps_breaks,  
   guide = guide_legend(title = "Species")
  ) +
  scale_alpha_manual(
-  values = c(
-   "Quaking aspen" = 0.9,
-   "Lodgepole pine" = 0.6,
-   "Douglas-fir" = 0.6,
-   "White fir" = 0.6,
-   "Gambel oak" = 0.6,
-   "Piñon-juniper" = 0.6,
-   "Ponderosa pine" = 0.6,
-   "Spruce-fir" = 0.6
-  ),
+  values = alpha_map,
   guide = "none"  # Hide alpha from legend
  ) +
- # xlim(-0.13, 0.15) +
- theme_minimal() +
+ xlim(-0.20, 0.22) +
+ theme_classic() +
  theme(
   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
@@ -933,54 +942,80 @@ frp.p2 <- sp_effects.frp %>%
  )
 frp.p2
 
-# Save the plot
-out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP_species.png')
-ggsave(out_png, dpi = 500, bg = 'white')
+
+################################################
+# version 2: removing Gambel oak and white fir #
+frp.p2.1 <- sp_effects.frp %>%
+ filter(!fill_species %in% c("Gambel oak","White fir")) %>%
+ mutate(effect = factor(effect, levels = param_order)) %>%
+ ggplot(., aes(x = x, y = effect, 
+               height = y, fill = fill_species, 
+               alpha = fill_species)) +
+ geom_density_ridges(
+  stat = "identity", scale = 1.5, show.legend=F,
+  color = scales::alpha("black", 0.6)
+ ) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "",
+  y = "Fixed Effect",
+  fill = "Species"
+ ) +
+ # add a subplot label
+ annotate("text", x = -0.15, y = 5,
+          label = expression(bold("(A)") ~ "FRPc"),
+          size = 4, hjust = 0) +
+ scale_fill_manual(
+  values = color_map,
+  # Exclude "Global Effect" from the legend
+  breaks = spps_breaks,  
+  guide = guide_legend(title = "Species")
+ ) +
+ scale_alpha_manual(
+  values = alpha_map,
+  guide = "none"  # Hide alpha from legend
+ ) +
+ xlim(-0.15, 0.15) +
+ theme_classic() +
+ theme(
+  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+  axis.title.y = element_text(size = 10, margin = margin(r = 8)),
+  axis.title.x = element_text(size = 10, margin = margin(t = 8)),
+  legend.position = c(0.85, 0.70),
+  legend.background = element_rect(
+   fill = scales::alpha("white", 0.6), 
+   color = NA, size = 1),
+  legend.title = element_text(size = 9),
+  legend.text = element_text(size = 8)
+ )
+frp.p2.1
 
 
+#####################################################
+# create the ridge plot for all other fixed effects #
+fixed_effects.frp <- tidy.effects.frp %>%
+ filter(!effect %in% c("aspen1","overlap"),
+        !str_detect(parameter,"fortypnm"),
+        !str_detect(parameter,"species"))
 
-# ###############################################
-# # create the ridge plot for all fixed effects #
-# frp.p3 <- sp_effects.frp %>%
-#  ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
-#  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
-#  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
-#  labs(
-#   x = "Effect Size",
-#   y = "Fixed Effect",
-#   fill = "Species"
-#  ) +
-#  scale_fill_manual(
-#   values = c(
-#    "Global Effect" = "gray",  # Neutral color for global effects
-#    "quaking_aspen" = "#e6ab02",
-#    "lodgepole_pine" = "#d95f02",
-#    "douglas_fir" = "#7570b3",
-#    "white_fir" = "#a6cee3",
-#    "piñon_juniper" = "#e7298a",
-#    "ponderosa_pine" = "#66a61e",
-#    "spruce_fir" = "#1b9e77"
-#   ),
-#   # Exclude "Global Effect" from the legend
-#   breaks = spps_breaks,  
-#   guide = guide_legend(title = "Species")
-#  ) +
-#  theme_minimal() +
-#  theme(
-#   legend.title = element_text(size = 10),
-#   legend.text = element_text(size = 8),
-#   axis.text.y = element_text(size = 10),
-#   axis.title.y = element_text(size = 12)
-#  )
-# frp.p1
-# 
-# # Save the plot
-# out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_full.png')
-# ggsave(out_png, dpi = 500, bg = 'white')
-
-# # Tidy up!
-# rm(frp_marginals, tidy.effects)
-# gc()
+# plot the ridges
+frp.p3 <- ggplot(fixed_effects.frp, 
+                 aes(x = x, y = effect, height = y)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect Size",
+  y = "Fixed Effect",
+ ) +
+ theme_minimal() +
+ theme(
+  legend.title = element_text(size = 10),
+  legend.text = element_text(size = 8),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 12)
+ )
+frp.p3
 
 
 
@@ -988,38 +1023,44 @@ ggsave(out_png, dpi = 500, bg = 'white')
 ########################
 # COMPOSITE BURN INDEX #
 
-
 #######################################
 # 1. Baseline model (no latent effects)
 
 # setup the model formula
 mf.cbi <- CBIbc_p90 ~ 1 + 
- fortypnm_gp:fortyp_pct + # majority forest type
- species_gp_n:ba_live + # species live BA
- # species_gp_n:tpp_live + # species live BA
- # species_gp_n:qmd_live + # species live QMD
- # species_gp_n:ht_live + # species live tree height
- # species_gp_n:dia_live + # species live tree diameter
- # fortyp_pct + # percent cover of the dominant forest type
- H_tpp + # gridcell structural diversity (dominance-based)
- lf_canopy + # gridcell forest canopy percent
- ba_dead_total + # proportion live/dead basal area
- erc_dv + vpd + vs + # day-of-burn climate/weather
- elev + slope + aspect + tpi + # topography 
- aspen # fire-level aspen presence
+ # forest composition and structure with mediation by VPD
+ vpd * (fortypnm_gp) + # majority forest type
+ vpd * (fortypnm_gp:fortyp_pct) + # majority forest type:percent cover
+ vpd * (species_gp_n:ba_live) + # species total live basal area
+ vpd * (species_gp_n:ht_live) + # species average live tree height
+ vpd * (species_gp_n:dia_live) + # species average live tree diameter
+ # other fixed effects (global effects)
+ # fortyp_pct + # majority forest type poercent cover
+ lf_canopy + # gridcell forest canopy cover
+ H_ba + # gridcell structural diversity (dominance-based)
+ tpp_dead_total + # proportion live/dead basal area
+ tpp_live_total + # total trees/pixel
+ erc_dv + vpd + vs + # day-of-burn fire weather
+ elev + slope + northness + tpi + # topography 
+ overlap + # gridcell VIIRS overlap (cumulative)
+ day_prop +  # gridcell proportion daytime detections 
+ log_fire_size + # log-scaled fire size
+ # reburn + # gridcell re-burn status
+ dist_to_perim # gridcell distance to fire edge
+ 
 # fit the model
 ml.cbi <- inla(
  mf.cbi, data = da,
  family = "gamma",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
+ # set priors for the fixed effects
  control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+  # relax the variance assumptions
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
  ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
+ # controls for posterior approximation and hyperparameter search
+ control.inla = list(strategy = "laplace", int.strategy = "grid")
 )
 summary(ml.cbi)
 # check on predictive power of the random effects models
@@ -1027,28 +1068,29 @@ mean(ml.cbi$cpo$cpo, na.rm = TRUE)
 
 
 ##############################################
-# 2. Baseline model + temporal random effect
+# 2. Baseline model + fire random effect
 
 # update the model formula
 mf.cbi.re <- update(
  mf.cbi, . ~ 1 + . + 
-  f(first_obs_date, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(0.5, 0.01)))
-  ) # temporal random effect
+  f(Fire_ID, model = "iid", hyper = list(
+   prec = list(prior = "pc.prec", param = c(5, 0.5))
+  )) 
 )
-# fit the model                     
+
+# fit the model
 ml.cbi.re <- inla(
- mf.cbi.re, data = da, 
+ mf.cbi.re, data = da,
  family = "gamma",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
+ # set priors for the fixed effects
  control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+  # relax the variance assumptions
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
  ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
+ # controls for posterior approximation and hyperparameter search
+ control.inla = list(strategy = "laplace", int.strategy = "grid")
 )
 summary(ml.cbi.re)
 # check on predictive power of the random effects models
@@ -1061,23 +1103,24 @@ mean(ml.cbi.re$cpo$cpo, na.rm = TRUE)
 # update the model formula
 mf.cbi.re2 <- update(
  mf.cbi.re, . ~ 1 + . + 
-  f(fire_id, model = "iid", 
-    hyper = list(prec = list(prior = "pc.prec", param = c(0.5, 0.01)))
-  ) # fire-level random effect
+  f(first_obs_date, model = "iid", 
+    hyper = list(prec = list(prior = "pc.prec", param = c(2, 0.5)))
+  ) 
 )
+
 # fit the model                     
 ml.cbi.re2 <- inla(
  mf.cbi.re2, data = da, 
  family = "gamma",
  control.predictor = list(compute = TRUE),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
+ # set priors for the fixed effects
  control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+  # relax the variance assumptions
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
  ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
+ # controls for posterior approximation and hyperparameter search
+ control.inla = list(strategy = "laplace", int.strategy = "grid")
 )
 summary(ml.cbi.re2)
 # check on predictive power of the random effects models
@@ -1103,10 +1146,6 @@ mesh <- inla.mesh.2d(
  cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
  offset = c(0.5, 0.1) # Boundary buffer
 )
-# Plot mesh to check
-plot(mesh)
-points(coords, col = "red", pch = 20)
-
 rm(coords)
 gc()
 
@@ -1119,7 +1158,7 @@ spde.ml <- inla.spde2.pcmatern(
  # P(practic.range < 0.3) = 0.5
  prior.range = c(0.1, 0.5),
  # P(sigma > 1) = 0.01
- prior.sigma = c(1, 0.01) # variance
+ prior.sigma = c(2, 0.5) # variance
 )
 
 # Compute the projector matrix (A)
@@ -1137,12 +1176,14 @@ str(field.idx)
 
 # Extract the predictor variables
 X <- da %>% 
- select(fire_id, first_obs_date, grid_index, 
-        fortypnm_gp, species_gp_n, total_tpp, forest_pct,      
-        canopypct, H_tpp, H_ba, ba_live_pr, tpp_live_pr, qmd_live, 
-        tree_ht_live, live_dead_pr_tpp, live_dead_pr_ba,
-        erc_dv, vpd, vs, slope, tpi, chili, elev,
-        aspen, day_prop)
+ select(Fire_ID, first_obs_date, grid_index, 
+        fortypnm_gp, species_gp_n, forest_pct, fortyp_pct,     
+        lf_canopy, H_tpp, H_ba, ba_live_pr, tpp_live_pr, qmd_live, 
+        ba_live, tpp_live, ht_live, dia_live, 
+        ba_dead_total, tpp_dead_total, tpp_live_total,
+        erc_dv, vpd, vpd_dv, vs, slope, tpi, northness, elev,
+        fire_aspen, grid_aspen, day_prop, overlap, 
+        log_fire_size, dist_to_perim, reburn)
 head(X)
 
 # Create the INLA data stack
@@ -1173,16 +1214,15 @@ ml.cbi.re.sp <- inla(
  family = "gamma",
  control.predictor = list(A = inla.stack.A(stack.cbi), compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
+ # set priors for the fixed effects
  control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
+  # relax the variance assumptions
+  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
  ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
+ # controls for posterior approximation and hyperparameter search
+ control.inla = list(strategy = "laplace", int.strategy = "grid")
 )
 summary(ml.cbi.re.sp)
-
 # check on predictive power of the random effects models
 mean(ml.cbi.re.sp$cpo$cpo, na.rm = TRUE)
 
@@ -1270,12 +1310,28 @@ ml_comparison.cbi <- tibble(
 # Print the comparison table
 print(ml_comparison.cbi)
 
-
 # tidy up !
 rm(A, coords_mat, field.idx, mesh, 
    ml.cbi, ml.cbi.re, ml.cbi.re2, spde.ml, stack.cbi)
 gc()
 
+
+#=================MODEL STATEMENTS=================#
+
+fixed_effects <- ml.cbi.re.sp$summary.fixed
+
+# Compute percentage change relative to aspen
+forest_diff.cbi <- fixed_effects %>%
+ rownames_to_column(var = "parameter") %>%
+ mutate(
+  exp_mean = exp(mean) - 1,  # Convert log(FRP) effect to % difference
+  lower_ci = exp(`0.025quant`) - 1,  # 2.5% CI bound
+  upper_ci = exp(`0.975quant`) - 1   # 97.5% CI bound
+ )
+# save this table
+write_csv(forest_diff.cbi, paste0(maindir,"data/tabular/mod/results/forest_differences_CBI.csv"))
+# check results
+forest_diff.cbi%>%select(parameter,exp_mean,lower_ci,upper_ci)
 
 
 #===========POSTERIOR EFFECTS===========#
@@ -1291,13 +1347,34 @@ tidy.effects.cbi <- tibble::tibble(
  data = purrr::map(cbi_marginals, ~ as.data.frame(.x))
 ) %>%
  unnest(data) %>%
- filter(!parameter %in% c("(Intercept)","aspen","day_prop")) %>%  # Exclude the intercept
+ # Exclude the intercept
+ filter(!parameter %in% c(
+  "(Intercept)","aspen","day_prop","overlap","log_fire_size"
+ )
+ ) %>%  
  mutate(
   effect = case_when(
-   str_detect(parameter, "ba_live_pr") ~ "Proportion of \nLive Basal Area",
-   str_detect(parameter, "qmd_live") ~ "Quadratic\nMean Diameter",
-   str_detect(parameter, "H_tpp") ~ "Shannon Index\n(Abundance-based)",
-   str_detect(parameter, "tree_ht_live") ~ "Tree height (m)",
+   str_detect(parameter, "ba_live") ~ "Live basal area",
+   # str_detect(parameter, "ba_live_pr") ~ "Proportion of\nlive basal area",
+   str_detect(parameter, "tpp_live") ~ "Live trees/pixel",
+   str_detect(parameter, "tpp_dead") ~ "Dead trees/pixel",
+   str_detect(parameter, "dia_live") ~ "Tree diameter",
+   str_detect(parameter, "ht_live") ~ "Tree height",
+   str_detect(parameter, "fortyp_pct") ~ "Percent cover",
+   # str_detect(parameter, "qmd_live") ~ "Live QMD",
+   # str_detect(parameter, "H_tpp") ~ "Shannon diversity \n(abundance-based)",
+   str_detect(parameter, "vs") ~ "Wind speed",
+   str_detect(parameter, "elev") ~ "Elevation",
+   str_detect(parameter, "northness") ~ "Northness",
+   str_detect(parameter, "slope") ~ "Slope",
+   str_detect(parameter, "H_ba") ~ "Shannon diversity (H-BA)",
+   str_detect(parameter, "tpi") ~ "Topographic position",
+   str_detect(parameter, "lf_canopy") ~ "Forest canopy cover",
+   str_detect(parameter, "erc_dv") ~ "Energy release component\n(15-year deviation)",
+   str_detect(parameter, "vpd") ~ "Vapor pressure deficit",
+   str_detect(parameter, "log_fire_size") ~ "log(Fire size)",
+   str_detect(parameter, "dist_to_perim") ~ "Distance to fire edge",
+   str_detect(parameter, "reburn") ~ "Re-burn",
    TRUE ~ parameter  # Default for all other fixed effects
   ),
   # Extract species names from parameters
@@ -1311,8 +1388,10 @@ tidy.effects.cbi <- tibble::tibble(
  group_by(effect) %>%
  mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
  ungroup() 
+
+# Order effects: Species-specific effects first, 
+# global effects by mean effect size
 tidy.effects.cbi <- tidy.effects.cbi %>%
- # Order effects: Species-specific effects first, global effects by mean effect size
  mutate(
   effect_order = case_when(
    !is.na(species) ~ 2,  # Species-specific effects
@@ -1322,55 +1401,200 @@ tidy.effects.cbi <- tidy.effects.cbi %>%
                    arrange(effect_order, desc(mean_effect)) %>%
                    pull(effect) %>%
                    unique()),
-  fill_species = ifelse(is.na(species), "Global Effect", species)
+  fill_species = ifelse(is.na(species), "Global effect", species)
  ) %>%
  mutate(fill_species = recode(
   fill_species,
   "quaking_aspen" = "Quaking aspen",
-  "lodgepole" = "Lodgepole",
-  "mixed_conifer" = "Mixed-conifer",
+  "lodgepole_pine" = "Lodgepole pine",
+  "douglas_fir" = "Douglas-fir",
+  "white_fir" = "White fir",
+  "gambel_oak" = "Gambel oak",
   "piñon_juniper" = "Piñon-juniper",
-  "ponderosa" = "Ponderosa",
+  "ponderosa_pine" = "Ponderosa pine",
   "spruce_fir" = "Spruce-fir"
  )) %>%
  mutate(
-  fill_species = factor(fill_species, 
-                        levels = c("Lodgepole", "Mixed-conifer", 
-                                   "Piñon-juniper", "Ponderosa", 
-                                   "Spruce-fir", "Quaking aspen")))
-
+  fill_species = factor(
+   fill_species,
+   levels = c("Lodgepole pine", "Douglas-fir", "White fir",
+              "Gambel oak", "Piñon-juniper", "Ponderosa pine",
+              "Spruce-fir", "Quaking aspen")))
 
 # check on the species name extraction
 unique(tidy.effects.cbi$fill_species)
 spps_breaks <- unique(tidy.effects.cbi$fill_species)
 
+###################################
+# Extract the forest type effects #
+fortyp_effects.cbi <- tidy.effects.cbi %>%
+ filter(str_detect(parameter, "fortypnm_gp"),
+        !str_detect(parameter, ":fortyp_pct")) %>%
+ mutate(
+  group = case_when(
+   str_detect(parameter, "vpd:") ~ "VPD-mediated",
+   TRUE ~ "Forest type"  # Default for all other fixed effects
+  )) %>%
+ group_by(fill_species) %>%
+ mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
+ ungroup() %>%
+ mutate(fill_species = fct_reorder(fill_species, -mean_effect))
+glimpse(fortyp_effects.cbi)
 
-#######################
-# create the ridge plot
-cbi.p1 <- tidy.effects.cbi %>%
- filter(!parameter %in% c("aspen1"),
-        !str_starts(parameter, "fortyp")) %>%
- ggplot(., aes(x = x, y = effect, height = y, fill = fill_species)) +
+# make the ridge plot
+cbi.p1 <- ggplot(fortyp_effects.cbi,
+                 aes(x = x, y = fill_species, height = y,
+                     fill = group, alpha=group)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, aes(alpha = group)) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect relative to aspen",
+  y = "Forest Type"
+ ) +
+ scale_fill_manual(
+  values = c(
+   "VPD-mediated" = "#800026",
+   "Forest type" = "#800026"
+  )
+ ) +
+ scale_alpha_manual(
+  values = c(
+   "VPD-mediated" = 0.2,
+   "Forest type" = 0.98
+  )
+ ) +
+ theme_minimal() +
+ theme(
+  legend.position = "none",
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 11)
+ )
+cbi.p1
+
+
+#######################################################
+# create the ridge plot for species structure metrics #
+sp_effects.cbi <- tidy.effects.cbi %>%
+ filter(effect %in% c("Live basal area","Tree height",
+                      "Percent cover","Tree diameter"),
+        !str_detect(parameter, "vpd"))
+
+# set the order for parameters
+param_order <- c("Tree diameter","Tree height",
+                 "Live basal area","Percent cover")
+# plot it
+cbi.p2 <- sp_effects.cbi %>%
+ mutate(effect = factor(effect, levels = param_order)) %>%
+ ggplot(., aes(x = x, y = effect, 
+               height = y, fill = fill_species, 
+               alpha = fill_species)) +
+ geom_density_ridges(
+  stat = "identity", scale = 1.5, show.legend=F,
+  color = scales::alpha("black", 0.6)) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "",
+  y = "Fixed Effect",
+  fill = "Species"
+ ) +
+ # add a subplot label
+ annotate("text", x = -0.22, y = 5,
+          label = expression(bold("(B)") ~ "CBIbc"),
+          size = 4, hjust = 0) +
+ scale_fill_manual(
+  values = color_map,
+  # Exclude "Global Effect" from the legend
+  breaks = spps_breaks,  
+  guide = guide_legend(title = "Species")
+ ) +
+ scale_alpha_manual(
+  values = alpha_map,
+  guide = "none"  # Hide alpha from legend
+ ) +
+ xlim(-0.22, 0.20) +
+ theme_classic() +
+ theme(
+  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+  axis.title.y = element_text(size = 10, margin = margin(r = 8)),
+  axis.title.x = element_text(size = 10, margin = margin(t = 8)),
+  legend.position = c(0.85, 0.70),
+  legend.background = element_rect(
+   fill = scales::alpha("white", 0.6), 
+   color = NA, size = 1),
+  legend.title = element_text(size = 9),
+  legend.text = element_text(size = 8)
+ )
+cbi.p2
+
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_CBI_species.png')
+ggsave(out_png, dpi = 500, bg = 'white')
+
+
+################################################
+# version 2: removing Gambel oak and white fir #
+cbi.p2.1 <- sp_effects.cbi %>%
+ filter(!fill_species %in% c("Gambel oak","White fir")) %>%
+ mutate(effect = factor(effect, levels = param_order)) %>%
+ ggplot(., aes(x = x, y = effect, 
+               height = y, fill = fill_species, 
+               alpha = fill_species)) +
+ geom_density_ridges(
+  stat = "identity", scale = 1.5, show.legend=T,
+  color = scales::alpha("black", 0.6)
+ ) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect size",
+  y = "Fixed Effect",
+  fill = "Species",
+ ) +
+ # add a subplot label
+ annotate("text", x = -0.14, y = 5,
+          label = expression(bold("(B)") ~ "CBIbc"),
+          size = 4, hjust = 0) +
+ scale_fill_manual(
+  values = color_map,
+  guide = "none"
+ ) +
+ scale_alpha_manual(
+  values = alpha_map,
+  guide = "none"
+ ) +
+ xlim(-0.14, 0.11) +
+ theme_classic() +
+ theme(
+  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+  axis.title.y = element_text(size = 10, margin = margin(r = 8)),
+  axis.title.x = element_text(size = 10, margin = margin(t = 8)),
+  legend.position = c(0.16, 0.30),
+  legend.background = element_rect(
+   fill = scales::alpha("white", 0.6), 
+   color = NA, size = 1),
+  legend.title = element_text(size = 9),
+  legend.text = element_text(size = 8)
+ )
+cbi.p2.1
+
+
+#####################################################
+# create the ridge plot for all other fixed effects #
+fixed_effects.cbi <- tidy.effects.cbi %>%
+ filter(!effect %in% c("aspen1","overlap"),
+        !str_detect(parameter,"fortypnm"),
+        !str_detect(parameter,"species"),
+        !fill_species %in% c("Gambel oak","White fir"))
+
+# plot the ridges
+cbi.p3 <- ggplot(fixed_effects.cbi, 
+                 aes(x = x, y = effect, height = y)) +
  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
   x = "Effect Size",
   y = "Fixed Effect",
-  fill = "Species"
- ) +
- scale_fill_manual(
-  values = c(
-   "Global Effect" = "gray",  # Neutral color for global effects
-   "Quaking aspen" = "#1b9e77",
-   "Lodgepole" = "#d95f02",
-   "Mixed-conifer" = "#7570b3",
-   "Piñon-juniper" = "#e7298a",
-   "Ponderosa" = "#66a61e",
-   "Spruce-fir" = "#e6ab02"
-  ),
-  # Exclude "Global Effect" from the legend
-  breaks = spps_breaks,  
-  guide = guide_legend(title = "Species")
  ) +
  theme_minimal() +
  theme(
@@ -1379,91 +1603,290 @@ cbi.p1 <- tidy.effects.cbi %>%
   axis.text.y = element_text(size = 10),
   axis.title.y = element_text(size = 12)
  )
-cbi.p1
+cbi.p3
+
 # Save the plot
-out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_CBI_full.png')
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_other.png')
 ggsave(out_png, dpi = 500, bg = 'white')
 
 
-####################################
-# plot with just the species metrics
-cbi.p2 <- tidy.effects.cbi %>%
- filter(fill_species != "Global Effect") %>%
- ggplot(., aes(x = x, y = effect, height = y, fill = fill_species, alpha = fill_species)) +
- geom_density_ridges(
-  stat = "identity", scale = 1.5,
-  # alpha = 0.7,
-  show.legend=T
- ) +
+#######################################
+# Make combined figures (FRP and CBI) #
+
+# Create the combined forest type relative to aspen
+fortyp_effects.frp$response <- "FRP"
+fortyp_effects.cbi$response <- "CBI"
+fortyp_effects <- bind_rows(fortyp_effects.frp, fortyp_effects.cbi) %>%
+ # reorder the effects so main effect is drawn on top
+ mutate(
+  group = factor(group, levels = c("VPD-mediated", "Forest type")),
+  fill_cat = factor(
+   paste(response, group),
+   levels = c(
+    "CBI VPD-mediated", "FRP VPD-mediated", 
+    "CBI Forest type", "FRP Forest type"
+   ))
+  )
+# order the forest types from low->high on the main effect
+forest_order <- fortyp_effects %>%
+ filter(group == "Forest type") %>%
+ group_by(fill_species) %>%
+ summarize(mean_effect = mean(x, na.rm = TRUE)) %>%
+ arrange(mean_effect)
+# apply the ordering
+fortyp_effects$fill_species <- factor(
+ fortyp_effects$fill_species, 
+ levels = rev(forest_order$fill_species)
+)
+
+# Plot posterior effects with credible intervals
+cmap <- c("CBI" = "#800026", "FRP" = "#FEB24C") # color map for the response
+p4 <- ggplot(fortyp_effects, aes(x = x, y = fill_species, height = y, 
+                                 fill = fill_cat, 
+                                 alpha = fill_cat,
+                                 color = fill_cat)) +
+ geom_density_ridges(stat = "identity", scale = 1.5) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
-  x = "Effect Size",
-  y = "Fixed Effect",
-  fill = "Species"
+  x = "Effect relative to aspen",
+  y = "Predominant Forest Type",
+  fill = "Effect Type",
  ) +
- # add a subplot label
- annotate("text", x = -0.13, y = 5, 
-          label = "(B)", fontface = "bold", 
-          size = 4, hjust = 0) +
  scale_fill_manual(
   values = c(
-   "Quaking aspen" = "#1b9e77",
-   "Lodgepole" = "#d95f02",
-   "Mixed-conifer" = "#7570b3",
-   "Piñon-juniper" = "#e7298a",
-   "Ponderosa" = "#66a61e",
-   "Spruce-fir" = "#e6ab02"
+   "FRP Forest type" = "#FEB24C",  
+   "FRP VPD-mediated" = scales::alpha("#FEB24C", 0.3),
+   "CBI Forest type" = "#800026",  
+   "CBI VPD-mediated" = scales::alpha("#800026", 0.3)
   ),
-  # Exclude "Global Effect" from the legend
-  breaks = spps_breaks,  
-  guide = guide_legend(title = "Species", override.aes = list(size = 2))
+  labels = c(
+   "Cumulative FRP", "VPD-mediated (FRPc)",
+   "90th percentile CBIbc", "VPD-mediated (CBIbc)"
+  ),
+  guide = guide_legend(
+   override.aes = list(
+    fill = c("#FEB24C", scales::alpha("#FEB24C", 0.3), 
+             "#800026", scales::alpha("#800026", 0.3)),
+    alpha = c(1, 0.3, 1, 0.3),  # Match transparency
+    color = c(
+     scales::alpha("black", 0.7),
+     scales::alpha("#FEB24C", 0.3), 
+     scales::alpha("black", 0.7), 
+     scales::alpha("#800026", 0.3))
+   ),
+   order = 1  # Ensure this legend appears first
+  )
  ) +
  scale_alpha_manual(
   values = c(
-   "Quaking aspen" = 0.9, 
-   "Lodgepole" = 0.7,  
-   "Mixed-conifer" = 0.7,
-   "Piñon-juniper" = 0.7,
-   "Ponderosa" = 0.7,
-   "Spruce-fir" = 0.7
+   "FRP Forest type" = 1,
+   "FRP VPD-mediated" = 0.3,
+   "CBI Forest type" = 1,
+   "CBI VPD-mediated" = 0.3
   ),
-  guide = "none"  # Hide alpha from legend
+  guide = "none"  
  ) +
- coord_cartesian(xlim=c(-0.13,0.15)) +
- theme_minimal() +
- theme(
-  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
-  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
-  axis.title.y = element_text(size = 10, margin = margin(r = 8)),
-  axis.title.x = element_text(size = 10, margin = margin(t = 10)),
-  legend.position = c(0.91, 0.74),
-  legend.background = element_rect(
-   fill = scales::alpha("white", 0.7), 
-   color = NA, size = 1),
-  legend.title = element_text(size = 10),
-  legend.text = element_text(size = 9),
-  legend.key.height = unit(0.4, "cm"), 
-  legend.key.width = unit(0.5, "cm"),
-  legend.spacing.y = unit(0.8, "cm"),    
-  legend.spacing.x = unit(0.6, "cm")
- )
-cbi.p2
-
+ scale_color_manual(
+  values = c(
+   "FRP Forest type" = scales::alpha("black", 0.6),
+   "FRP VPD-mediated" = scales::alpha("#FEB24C", 0.3),
+   "CBI Forest type" = scales::alpha("black", 0.6),  
+   "CBI VPD-mediated" = scales::alpha("#800026", 0.3)
+  ),
+  guide = "none"
+ ) +
+ coord_cartesian(xlim=c(-0.38,0.44)) +
+ theme_classic() +
+ theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+       axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+       axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+       legend.position = c(0.18, 0.26),
+       legend.background = element_rect(
+        fill = scales::alpha("white", 0.4), 
+        color = NA, size = 0.8),
+       legend.title = element_text(size = 9),
+       legend.text = element_text(size = 8))
+p4
 # Save the plot
-out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_CBI_species.png')
-ggsave(out_png, dpi = 500, bg = 'white')
-# 
-# # Tidy up!
-# rm(cbi_marginals, tidy.effects)
-# gc()
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FORTYPCD_FRP-CBI_species_all.png')
+ggsave(out_png, dpi = 500, width = 7, height = 4, bg = 'white')
 
 
-# Make a combined figure (FRP and CBI)
-# Load the two ridge plots (assuming they are `frp_plot` and `cbi_plot`)
-frp.cbi.p3 <- frp.p2 / cbi.p2 # "/" stacks them, "|" would place them side-by-side
-frp.cbi.p3
+#############################################
+# version 2: without Gambel oak and white fir
+p4.1 <- fortyp_effects %>%
+ filter(!fill_species %in% c("Gambel oak")) %>%
+ ggplot(., aes(x = x, y = fill_species, height = y, 
+               fill = fill_cat, 
+               alpha = fill_cat,
+               color = fill_cat)) +
+ geom_density_ridges(stat = "identity", scale = 1.5) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect relative to aspen",
+  y = "Predominant Forest Type",
+  fill = "Effect Type",
+ ) +
+ scale_fill_manual(
+  values = c(
+   "FRP Forest type" = "#FEB24C",  
+   "FRP VPD-mediated" = scales::alpha("#FEB24C", 0.3),
+   "CBI Forest type" = "#800026",  
+   "CBI VPD-mediated" = scales::alpha("#800026", 0.3)
+  ),
+  labels = c(
+   "Cumulative FRP", "VPD-mediated (FRPc)",
+   "90th percentile CBIbc", "VPD-mediated (CBIbc)"
+  ),
+  guide = guide_legend(
+   override.aes = list(
+    fill = c("#FEB24C", scales::alpha("#FEB24C", 0.3), 
+             "#800026", scales::alpha("#800026", 0.3)),
+    alpha = c(1, 0.3, 1, 0.3),  # Match transparency
+    color = c(
+     scales::alpha("black", 0.7),
+     scales::alpha("#FEB24C", 0.3), 
+     scales::alpha("black", 0.7), 
+     scales::alpha("#800026", 0.3))
+   ),
+   order = 1  # Ensure this legend appears first
+  )
+ ) +
+ scale_alpha_manual(
+  values = c(
+   "FRP Forest type" = 1,
+   "FRP VPD-mediated" = 0.3,
+   "CBI Forest type" = 1,
+   "CBI VPD-mediated" = 0.3
+  ),
+  guide = "none"  
+ ) +
+ scale_color_manual(
+  values = c(
+   "FRP Forest type" = scales::alpha("black", 0.6),
+   "FRP VPD-mediated" = scales::alpha("#FEB24C", 0.3),
+   "CBI Forest type" = scales::alpha("black", 0.6),  
+   "CBI VPD-mediated" = scales::alpha("#800026", 0.3)
+  ),
+  guide = "none"
+ ) +
+ coord_cartesian(xlim=c(-0.38,0.44)) +
+ theme_classic() +
+ theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+       axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+       axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+       legend.position = c(0.18, 0.26),
+       legend.background = element_rect(
+        fill = scales::alpha("white", 0.4), 
+        color = NA, size = 0.8),
+       legend.title = element_text(size = 9),
+       legend.text = element_text(size = 8))
+p4.1
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FORTYPCD_FRP-CBI_species.png')
+ggsave(out_png, dpi = 500, width = 8, height = 4, bg = 'white')
 
+
+###################################
+# Species composition / structure #
+p5 <- frp.p2 / cbi.p2 # "/" stacks them, "|" would place them side-by-side
+p5
 # Save the plot
 out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP-CBI_species.png')
+ggsave(out_png, plot = p5, dpi = 500, width = 7, height = 6, bg = 'white')
+# version 2
+p5.1 <- frp.p2.1 / cbi.p2.1 # "/" stacks them, "|" would place them side-by-side
+p5.1
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP-CBI_species_v2.png')
+ggsave(out_png, plot = p5.1, dpi = 500, width = 8, height = 6, bg = 'white')
+
+
+#######################
+# All other effects ...
+# Create the combined forest type relative to aspen
+fixed_effects.frp$response <- "FRP"
+fixed_effects.cbi$response <- "CBI"
+fixed_effects <- bind_rows(fixed_effects.frp, fixed_effects.cbi)
+
+# plot it
+p6 <- fixed_effects %>%
+ filter(effect != "Re-burn") %>%
+ ggplot(., aes(x = x, y = effect, height = y, fill = response)) +
+ geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect size",
+  y = "Parameter",
+  fill = "Response",
+ ) +
+ scale_fill_manual(values = c("FRP" = "#FEB24C", "CBI" = "#800026"),
+                   labels = c(
+                    "FRP" = "Cumulative FRP",
+                    "CBI" = expression("90"^"th" ~ "Percentile CBI"))) +
+ coord_cartesian(xlim=c(-0.16,0.20)) +
+ theme_classic() +
+ theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+       axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+       axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+       legend.position = c(0.18, 0.20),
+       legend.background = element_rect(
+        fill = scales::alpha("white", 0.4), 
+        color = NA, size = 0.8),
+       legend.title = element_text(size = 9),
+       legend.text = element_text(size = 8))
+p6
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP-CBI_fixedeffects.png')
 ggsave(out_png, dpi = 500, width = 8, height = 6, bg = 'white')
 
+gc()
+
+
+#====================RESULTS TABLES=======================#
+
+# set the results directory
+results_dir = paste0(maindir,"data/tabular/mod/results/")
+
+ml_comparison.frp$response <- "FRP"
+ml_comparison.cbi$response <- "CBI"
+ml_comparison <- bind_rows(ml_comparison.frp, ml_comparison.cbi)
+head(ml_comparison)
+
+# save to CSV
+write_csv(ml_comparison, paste0(results_dir,"model_comparison_FRP-CBI.csv"))
+
+
+######################################################
+# Extract fixed effects summary for both FRP and CBI #
+summary.frp <- as.data.frame(ml.frp.re.sp$summary.fixed) %>%
+ rownames_to_column("Parameter") %>%
+ rename(
+  Mean = mean,
+  SD = sd,
+  `2.5% CI` = `0.025quant`,
+  `50% CI` = `0.5quant`,
+  `97.5% CI` = `0.975quant`
+ ) %>%
+ mutate(Response = "FRP")
+summary.cbi <- as.data.frame(ml.cbi.re.sp$summary.fixed) %>%
+ rownames_to_column("Parameter") %>%
+ rename(
+  Mean = mean,
+  SD = sd,
+  `2.5% CI` = `0.025quant`,
+  `50% CI` = `0.5quant`,
+  `97.5% CI` = `0.975quant`
+ ) %>%
+ mutate(Response = "CBI")
+# combine them
+ml_summary.fixed <- bind_rows(summary.frp, summary.cbi)
+head(ml_summary.fixed)
+
+# save to CSV
+write_csv(ml_summary.fixed, paste0(results_dir,"model_summaries_FRP-CBI.csv"))
+
+gc()
