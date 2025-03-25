@@ -15,91 +15,32 @@ library(viridis)
 
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
 
-# load the fire census data
-fires <- paste0(maindir,"data/spatial/mod/srm_fire_census_2017_to_2023_ics_perims.gpkg")
-fires <- st_read(fires) %>%
- as_tibble() %>%
- rename(
-  fire_ig_dt = DISCOVERY_DATE,
-  fire_acres = ICS_ACRES,
-  fire_name = Fire_Name,
-  fire_aspenpct = Aspen_Pct
- ) %>%
- select(Fire_ID, fire_name, fire_ig_dt, fire_acres, fire_aspenpct) %>%
+
+#=========Load the Prepped gridcell data=========#
+
+# gridcell_prep.R
+fp <- paste0(maindir,"data/tabular/mod/model_data_cleaned.csv")
+grid_tm <- read_csv(fp) %>%
+ # prep some of the attributes for modeling
  mutate(
-  Fire_ID = as.numeric(Fire_ID),
-  fire_acres = as.numeric(fire_acres),
-  fire_aspenpct = as.numeric(fire_aspenpct))
-head(fires)
-
-
-#=========Prep the grid data=========#
-
-# Format the species composition data frame 
-# (long-format) each grid has rows for species co-occurring with the dominant type
-# climate and topography are summarized at the gridcell level
-
-# load the aggregated FRP grid with TreeMap and climate/topography
-fp <- paste0(maindir,'data/tabular/mod/gridstats_fortypnm_gp_tm_ct_frp-cbi.csv')
-grid_tm <-  read_csv(fp) %>% # read in the file
- # join in some of the fire information
- left_join(fires, by="Fire_ID") %>%
- # remove missing FRP, prep columns
- # Ensure daytime FRP and CBIbc is greater than 0
- filter(
-  frp_csum > 0, # make sure cumulative FRP > 0
-  CBIbc_p90 > 0 # make sure CBI > 0
- ) %>% 
- # create a numeric fire ID
- mutate(
-  # tidy the temporal fields
-  fire_ig_dt = as.Date(fire_ig_dt),  
-  fire_year = year(fire_ig_dt),              
-  fire_month = month(fire_ig_dt),
-  first_obs_date = as.Date(first_obs_date), # the day of first observation
-  first_obs_doy = as.numeric(lubridate::yday(first_obs_date)),
-  fire_doy = as.factor(interaction(Fire_ID, first_obs_doy)),
   first_obs_date = as.factor(first_obs_date),
-  # Create a "season" variable based on the month
-  season = case_when(
-   fire_month %in% c(3, 4, 5) ~ "spring",
-   fire_month %in% c(6, 7, 8) ~ "summer",
-   fire_month %in% c(9, 10, 11) ~ "fall"
-  ),
-  # Year/season interaction
-  year_season = interaction(fire_year, season, drop = TRUE),
-  # Factorize the temporal attributes
-  season = as.factor(season),
-  fire_year = as.factor(fire_year),
-  year_season = as.factor(year_season),
-  # Format species names consistently
-  fortypnm_gp = str_to_lower(fortypnm_gp),
-  fortypnm_gp = str_replace_all(fortypnm_gp, "-", "_"),
-  fortypnm_gp = str_replace_all(fortypnm_gp, " ", "_"),
-  # make sure factor variables are set for species names
-  fortypnm_gp = as.factor(fortypnm_gp),
-  Fire_ID = as.factor(Fire_ID),
-  # proportion of contributing AFD during daytime observations
-  day_prop = day_count / afd_count,
-  # log-scaled outcomes
-  log_frp_max = log(frp_max), # maximum day/night FRP
-  log_frp_csum = log(frp_csum), # cumulative (total day/night)
-  log_frp_max_day = log(frp_max_day), # maximum daytime FRP
-  log_frp_max_night = log(frp_max_night), # maximum nighttime FRP
-  log_frp_csum_day = log(frp_csum_day), # daytime cumulative FRP
-  log_frp_csum_night = log(frp_csum_night), # nighttime cumulative FRP
-  # scale the percentages to 0-1
-  forest_pct = forest_pct / 100,
-  fire_aspenpct = fire_aspenpct / 100,
-  ) %>%
- group_by(Fire_ID) %>%
- mutate(aspen = ifelse(any(fortypnm_gp == "quaking_aspen"), 1, 0)) %>%
- ungroup() %>%
- # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_idx, fortypnm_gp, .keep_all = TRUE) # remove duplicates
-glimpse(grid_tm) # check the results
-
-rm(fires) # clean up the fire perimeters
+  log_fire_size = log(fire_acres) # log-scale fire size
+ ) %>%
+ # flag re-burn gridcells
+ group_by(grid_index) %>%
+ mutate(
+  # Get earliest fire date for this gridcell
+  first_fire_dt = min(fire_ig_dt, na.rm = TRUE),
+  # Flag reburn: if current fire date is after earliest
+  reburn = as.factor(fire_ig_dt > first_fire_dt)
+ ) %>%
+ filter(
+  # remove re-burn gridcells
+  reburn == "FALSE"
+ ) %>%
+ distinct(grid_idx, fortypnm_gp, .keep_all = T) %>%
+ ungroup()
+glimpse(grid_tm)
 
 #############################
 # check how many grids, etc #
@@ -114,37 +55,6 @@ print(paste0(
 # retain predominantly forested gridcells ...
 grid_tm <- grid_tm %>%
  filter(forest_pct >= 0.50)
-
-##############################################
-# Check the proportion of daytime observations
-summary(grid_tm$day_prop)
-dim(grid_tm %>% filter(day_prop > 0.50))[1]
-
-###############################
-# Remove duplicate "grid_index"
-# These are reburns ... while interesting, out of scope
-dup_grids <- grid_tm %>%
- group_by(grid_index) %>%
- filter(n() > 1) %>%
- arrange(grid_index, Fire_ID)
-
-# save a spatial polygon of the duplicated grids
-dir = paste0(maindir,"data/spatial/mod/VIIRS/")
-grid <- st_read(paste0(dir,"viirs_snpp_jpss1_afd_latlon_fires_pixar_gridstats.gpkg"))
-grid <- grid %>%
- filter(grid_index %in% unique(dup_grids$grid_index)) %>%
- st_as_sf(.) %>% st_transform(st_crs(grid))
-st_write(grid,paste0(maindir,"data/spatial/mod/grid_model_data_duplicates.gpkg"), append=F)
-rm(grid)
-gc()
-
-dup_idx <- unique(dup_grids$grid_index)
-grid_tm <- grid_tm %>%
- filter(!grid_index %in% dup_idx)
-print(paste0(
- "Removed [",dim(dup_grids)[1],"] duplicate gridcells."
-))
-rm(dup_grids, dup_idx) # tidy up
 
 ##########################################
 # filter fires with not enough gridcells #
@@ -178,26 +88,10 @@ length(unique(grid_tm$Fire_ID))
 # Subset species with too few observations
 
 # check how many grids of each forest type there are
-spp_counts <- da %>%
+(fortyp_counts <- da %>%
  group_by(fortypnm_gp) %>%
  summarize(n = n()) %>%
- ungroup()
-spp_counts
-
-# # calculate the dominant forest type for the fire
-# # this is the single majority forest type
-# dom_fortyp <- grid_tm %>%
-#  group_by(Fire_ID) %>%
-#  count(fortypnm_gp) %>%
-#  slice_max(n, n = 1, with_ties = FALSE) %>%
-#  rename(fire_dfortyp = fortypnm_gp)
-# # join back to grid_tm
-# grid_tm <- grid_tm %>%
-#  left_join(dom_fortyp, by = "Fire_ID") %>%
-#  mutate(fire_dfortyp_int = as.factor(interaction(Fire_ID, fire_dfortyp)))
-# head(grid_tm %>% select(Fire_ID, fortypnm_gp, fire_dfortyp, fire_dfortyp_int))
-# rm(dom_fortyp)
-
+ ungroup())
 
 
 #===============Explore Distributions, etc.================#
