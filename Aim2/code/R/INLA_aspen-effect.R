@@ -11,33 +11,145 @@ library(forcats)
 # Environment variables
 maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
 
-# load the cleaned model data frame
-grid_tm <- paste0(maindir,"data/tabular/mod/model_data_cleaned.csv")
-grid_tm <- read_csv(grid_tm) %>%
- # filter to fires with some aspen
- filter(
-  fire_aspen == 1
- ) %>%
- # make sure factors are set
+#=========Load the Prepped gridcell data=========#
+
+# gridcell_prep.R
+fp <- paste0(maindir,"data/tabular/mod/model_data_cleaned.csv")
+grid_tm <- read_csv(fp) %>%
+ # filter to aspen fires
+ filter(fire_aspen == 1) %>%
+ # prep some of the attributes for modeling
  mutate(
-  first_obs_date = factor(first_obs_date)
+  first_obs_date = as.factor(first_obs_date),
+  fire_aspen = as.factor(fire_aspen),
+  grid_aspen = as.factor(grid_aspen),
+  log_fire_size = log(fire_acres) # log-scale fire size
  ) %>%
- group_by(grid_idx) %>%
+ # flag re-burn gridcells
+ group_by(grid_index) %>%
  mutate(
-  
-  # Compute aspen-specific metrics only for quaking aspen
-  aspen_ba_live = sum(if_else(species_gp_n == "quaking_aspen", ba_live, 0.0), na.rm = TRUE),
-  aspen_tpp_live = sum(if_else(species_gp_n == "quaking_aspen", tpp_live, 0.0), na.rm = TRUE),
-  aspen_ht_live = mean(if_else(species_gp_n == "quaking_aspen", ht_live, NA_real_), na.rm = TRUE),
-  aspen_dia_live = mean(if_else(species_gp_n == "quaking_aspen", dia_live, NA_real_), na.rm = TRUE),
-  
-  # Compute proportions (avoiding division by zero)
-  aspen_ba_pr = if_else(ba_live_total > 0, aspen_ba_live / ba_live_total, 0.0),
-  aspen_tpp_pr = if_else(tpp_live_total > 0, aspen_tpp_live / tpp_live_total, 0.0)
+  # Get earliest fire date for this gridcell
+  first_fire_dt = min(fire_ig_dt, na.rm = TRUE),
+  # Flag reburn: if current fire date is after earliest
+  reburn = as.factor(fire_ig_dt > first_fire_dt)
  ) %>%
  ungroup() %>%
+ # filter out re-burns
+ filter(
+  reburn == "FALSE"
+ ) %>%
+ # calculate the predominant species by BA and TPP
+ group_by(grid_idx) %>%
+ mutate(
+  dom_sp_ba = as.factor(species_gp_n[which.max(ba_live)]),
+  dom_sp_tpp = as.factor(species_gp_n[which.max(tpp_live)]),
+  dom_sp_ht = as.factor(species_gp_n[which.max(ht_live)]),
+  dom_sp_dia = as.factor(species_gp_n[which.max(dia_live)])
+ ) %>%
+ ungroup() %>%
+ # select the model attributes ...
+ select(
+  grid_idx, grid_index, Fire_ID, fortypnm_gp, species_gp_n, first_obs_date,
+  ba_live, tpp_live, qmd_live, ht_live, dia_live, H_ba, H_tpp,
+  tpp_live_total, tpp_dead_total, tpp_live_pr, qmd_live_mean,
+  ba_live_total, ba_dead_total, ba_live_pr,  
+  lf_canopy, lf_height, forest_pct, fortyp_pct,
+  erc, erc_dv, vpd, vpd_dv, vs, elev, slope, northness, tpi,
+  day_prop, overlap, dist_to_perim, log_fire_size, 
+  log_frp_csum, CBIbc_p90, CBIbc_p95, CBIbc_p99, 
+  x, y, fire_aspen, grid_aspen,
+  aspen_ba_pr, aspen_tpp_pr, aspen_ba_live,
+  aspen_tpp_live, aspen_ht_live, aspen_dia_live,
+  dom_sp_ba, dom_sp_tpp, dom_sp_ht, dom_sp_dia
+ ) %>%
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_idx, species_gp_n, .keep_all = TRUE) # remove duplicates
+glimpse(grid_tm)
+
+###################################################
+# check how many grids are majority forested, etc #
+print(length(unique(grid_tm$grid_idx))) # unique gridcells
+# percent of gridcells majority forested
+# Check how many grids are > 50% forested
+print(paste0(
+ "Percent forested gridcells (>50% gridcell area): ",
+ round(dim(grid_tm %>% filter(forest_pct > 0.50) %>% distinct(grid_idx))[1]/
+        dim(grid_tm %>% distinct(grid_idx))[1], 3) * 100, "%"
+))
+# # retain predominantly forested gridcells ...
+# grid_tm <- grid_tm %>%
+#  filter(forest_pct >= 0.50)
+
+##########################################
+# filter fires with not enough gridcells #
+# should have at least 10 (?)
+# check on the grid cell counts
+gridcell_counts <- grid_tm %>%
+ distinct(Fire_ID, grid_idx) %>% # keep only distinct rows
+ group_by(Fire_ID) %>%
+ summarise(n_gridcells = n())
+# check the distribution
+summary(gridcell_counts$n_gridcells)
+# calculate the quantile distribution
+(qt <- tibble::enframe(
+ round(quantile(gridcell_counts$n_gridcells, probs = seq(.1, .9, by = .1))),
+ name = "qt", value = "val"
+))
+(qt10 = qt[1,]$val) # 10%
+# # filter fires below the 10th percentile
+# grid_tm <- grid_tm %>%
+#  group_by(Fire_ID) %>%
+#  filter(n() >= qt10) %>%
+#  ungroup()
+# tidy up!
+rm(gridcell_counts,qt)
+
+
+##################################################
+# Assess the proportion of live basal area and TPP
+# filter potential noise ...
+# check proportion of live BA and TPP
+(qt.ba <- tibble::enframe(
+ quantile(grid_tm$ba_live_pr, probs = seq(0, 1, by = .1)),
+ name = "qt", value = "val"
+))
+(qt10.ba = qt.ba[2,]$val) # 10%
+# plot the distribution and 10th percentile line
+ggplot(grid_tm, aes(x = ba_live_pr)) +
+ geom_histogram(
+  bins = 30, 
+  fill = "grey", 
+  color="grey40", 
+  alpha = 0.4
+ ) +
+ geom_vline(
+  xintercept = qt10.ba, color = "darkred", linewidth=1, linetype = "dashed"
+ ) +
+ labs(x = "Proportion live basal area", y = "Count") +
+ theme_classic()
+# abundance (TPP)
+(qt.tpp <- tibble::enframe(
+ quantile(grid_tm$tpp_live_pr, probs = seq(0, 1, by = .1)),
+ name = "qt", value = "val"
+))
+(qt10.tpp = qt.tpp[2,]$val) # 10%
+
+# check percentage of rows below the threshold
+1 - dim(grid_tm %>% filter(
+ ba_live_pr >= qt.ba[2,]$val |
+  tpp_live_pr >= qt.tpp[2,]$val
+))[1] / dim(grid_tm)[1]
+
+# filter species contributing less than the 10th percentile
+grid_tm <- grid_tm %>%
+ # filter noise in species data
+ filter(
+  # remove noise from small species proportions
+  # (ba_live_pr >= 0.10)
+  # either tpp or ba over their 10th percentile
+  (ba_live_pr >= qt10.ba | tpp_live_pr >= qt10.tpp)
+ )
+rm(qt.ba, qt.tpp)
 
 ###############################
 # check on the species counts #
@@ -56,88 +168,70 @@ summary(grid_tm$aspen_tpp_pr)
 length(unique(grid_tm$grid_idx))
 length(unique(grid_tm$Fire_ID))
 
-##############################################################
-# Count how many times aspen co-occurs with other forest types
-aspen_coo <- grid_tm %>%
- group_by(fortypnm_gp) %>%
- summarise(
-  n_total = n(),  # Total occurrences of the forest type
-  n_aspen = sum(grid_aspen == 1, na.rm = TRUE),  # How many co-occur with aspen
-  aspen_ba_pr_mean = mean(aspen_ba_pr, na.rm=TRUE),
-  aspen_ba_pr_med = median(aspen_ba_pr),
-  aspen_ba_pr_p90 = quantile(aspen_ba_pr, probs = 0.9),
-  pct_aspen_coo = round((n_aspen / n_total) * 100, 1)  # Convert to percentage
- ) %>%
- arrange(desc(pct_aspen_coo))  # Sort by co-occurrence percentage
-print(aspen_coo)
-rm(aspen_coo)
+# relevel the grid_aspen factor
+grid_tm$grid_aspen = fct_relevel(grid_tm$grid_aspen, c("1","0"))
+levels(grid_tm$grid_aspen)
 
 
 #===========MODEL SETUP==============#
-
-# list of species names
-spps <- c("quaking_aspen", "douglas_fir", "lodgepole_pine", 
-          "ponderosa_pine", "spruce_fir", "piñon_juniper",
-          "white_fir", "gambel_oak")
-# force aspen to be the baseline
-grid_tm <- grid_tm %>%
- mutate(
-  species_gp_n = fct_relevel(species_gp_n, spps)
- )
-# check the factor levels
-# make sure aspen is first
-levels(grid_tm$species_gp_n)
 
 # prep the model data frame
 # center and scale fixed effects
 da <- grid_tm %>%
  mutate(
+  # force aspen to be the baseline factor
+  species_gp_n = fct_relevel(species_gp_n, "quaking_aspen"),
+  fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen"),
   # center/scale metrics / fixed effects
   across(
    c(aspen_ba_live, aspen_tpp_live, aspen_ht_live, # gridcell aspen metrics
      aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, # gridcell aspen metrics
      H_ba, H_tpp, # grid-level diversity metrics
-     ba_live, dia_live, ba_live, # structure metrics
-     forest_pct, fortyp_pct, lf_canopy, fire_aspenpct, # gridcell forest characteristics
-     ba_dead_total, tpp_live_total, tpp_dead_total, # gridcell forest characteristics
+     ba_live, dia_live, tpp_live, # structure metrics
+     forest_pct, fortyp_pct, lf_canopy, lf_height, # gridcell forest characteristics
+     ba_dead_total, ba_live_total, tpp_live_total, tpp_dead_total, # gridcell forest characteristics
      erc, erc_dv, vpd, vs, #climate
      elev, slope, northness, tpi, # topography
      day_prop, overlap, # VIIRS detection characteristics
+     dist_to_perim 
    ), ~ as.numeric(scale(., center=T, scale=T))
-  ),
-  log_fire_size = log(fire_acres), # log-scale fire size
-  grid_aspen = as.factor(grid_aspen), # factor for grid aspen presence
-  fire_aspen = as.factor(fire_aspen) # fire-level aspen presence
+  )
  ) %>%
  # keep just one row per grid cell by predominant type
  distinct(grid_idx, fortypnm_gp, .keep_all = TRUE) %>%
  arrange(grid_idx)
-
+rm(grid_tm)
 gc()
 
-#########################################
-# force aspen to be the baseline factor #
-da <- da %>%
- mutate(
-  species_gp_n = fct_relevel(species_gp_n, "quaking_aspen"),
-  fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen")
- )
 # check the factor levels
 # make sure aspen is first
 levels(da$species_gp_n)
 levels(da$fortypnm_gp)
 
-################################
-# check the mean FRP for aspen #
-# extract all aspen rows
-aspen = da%>%filter(fortypnm_gp == "quaking_aspen")
-aspen_mean_frpc = mean(aspen$log_frp_csum) # mean cumulative frp
-aspen_mean_cbibc = mean(aspen$CBIbc_p90) # mean cumulative frp
-rm(aspen)
+
 
 #===========MODEL FITTING==============#
-
 set.seed(456)
+
+####################
+# define some priors
+# fixed effects
+pr.fixed <- list(
+ prec.intercept = 1e-6, 
+ prec = 0.001  # shrinkage prior
+)
+# for the Gaussian precision
+pr.family <- list(
+ hyper = list(
+  prec = list(
+   prior = "pc.prec", param = c(1, 0.5))
+ )
+)
+# pc.prec for random effects, etc.
+pr.pc_prec <- list(
+ prec = list(
+  prior = "pc.prec", param = c(1, 0.5))
+)
 
 ########################
 # FIRE RADIATIVE POWER #
@@ -147,49 +241,31 @@ set.seed(456)
 
 # setup the model formula
 mf.frp <- log_frp_csum ~ 1 +
- vpd * (fortypnm_gp * aspen_ba_pr) + 
+ vpd * (fortypnm_gp:aspen_ba_pr) + 
  fortyp_pct + # forest type percent cover
- H_ba + # gridcell structural diversity (dominance-based)
  lf_canopy + # gridcell forest canopy percent
  tpp_dead_total + # proportion live/dead basal area
  tpp_live_total + # total trees/pixel
- erc_dv + # day-of-burn climate/weather
+ erc_dv + vs + # day-of-burn climate/weather
  elev + slope + northness + tpi + # topography 
  overlap + # gridcell VIIRS overlap (cumulative)
  day_prop + # gridcell proportion daytime detections 
- log_fire_size + # log-scaled fire size
- fire_aspenpct + # fire-level aspen percent
+ dist_to_perim + # gridcell distance to perimeter
  grid_aspen + # gridcell aspen presence
  # random effects
- f(Fire_ID, model = "iid", 
-   hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
- ) + 
- f(first_obs_date, model = "iid",
-   hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
- )
+ f(Fire_ID, model = "iid", hyper = pr.pc_prec)
 
 # fit the model
 ml.frp <- inla(
  mf.frp, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- # set priors for the fixed effects
- control.fixed = list(
-  mean.intercept = aspen_mean_frpc, # prior on intercept
-  prec.intercept = 0.5,  # prior on intercept precision
-  mean = 0, # mean on the fixed effects
-  prec = 0.1  # shrinkage prior for all fixed effects
- ),
- control.family = list(
-  # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
- ),
- # controls for posterior approximation and hyperparameter search
- control.inla = list(strategy = "laplace", int.strategy = "grid")
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+ control.fixed = pr.fixed, # regularization on fixed effects
+ control.family = pr.family # on the Gaussian observation
 )
-summary(ml.frp)
-# check on predictive power of the random effects models
+summary(ml.frp) # model summary table
+# check on predictive power (CPO)
 mean(ml.frp$cpo$cpo, na.rm = TRUE)
 
 
@@ -213,15 +289,17 @@ mesh <- inla.mesh.2d(
  offset = c(0.5, 0.1) # Boundary buffer
 )
 
+rm(coords) # tidy up
+
 # Build the SPDE model
 spde.ml <- inla.spde2.pcmatern(
  # Mesh and smoothness parameter
  mesh = mesh, 
  alpha = 2,
  # P(practic.range < 0.3) = 0.5
- prior.range = c(0.1, 0.5),
+ prior.range = c(0.3, 0.5), # 50% certainty that range is below ~5km
  # P(sigma > 1) = 0.01
- prior.sigma = c(1, 0.1) # variance
+ prior.sigma = c(1, 0.01) # variance
 )
 
 # Compute the projector matrix (A)
@@ -239,7 +317,7 @@ str(field.idx)
 
 # Extract the predictor variables
 X <- da %>% 
- select(Fire_ID, first_obs_date, grid_index, fire_aspenpct,
+ select(Fire_ID, first_obs_date, grid_index,
         aspen_ba_live, aspen_tpp_live, aspen_ht_live, 
         aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, 
         fortypnm_gp, fortyp_pct, species_gp_n,  
@@ -247,7 +325,7 @@ X <- da %>%
         lf_canopy, H_tpp, H_ba, ba_dead_total,
         erc_dv, vpd, vs, elev, slope, northness, tpi,
         tpp_live_total, tpp_dead_total,
-        grid_aspen, day_prop, overlap, log_fire_size)
+        grid_aspen, day_prop, overlap, dist_to_perim)
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
@@ -276,23 +354,14 @@ ml.frp.re.sp <- inla(
  family = "gaussian",
  control.predictor = list(A = inla.stack.A(stack.frp), compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
- # set priors for the fixed effects
- control.fixed = list(
-  mean.intercept = 0, # prior on intercept
-  prec.intercept = 0.5,  # prior on intercept precision
-  mean = 0, # mean on the fixed effects
-  prec = 0.5  # shrinkage prior for all fixed effects
- ),
- control.family = list(
-  # relax the variance assumptions
-  hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.5)))
- ),
- # controls for posterior approximation and hyperparameter search
- control.inla = list(strategy = "laplace", int.strategy = "grid")
+ control.fixed = pr.fixed, # regularization on fixed effects
+ control.family = pr.family # on the Gaussian observation
 )
 summary(ml.frp.re.sp)
 mean(ml.frp.re.sp$cpo$cpo, na.rm = TRUE)
 
+rm(stack.frp)
+gc()
 
 #===========POSTERIOR EFFECTS===========#
 
@@ -306,7 +375,7 @@ tidy.effects.frp <- tibble::tibble(
  data = purrr::map(frp_marginals, ~ as.data.frame(.x))
 ) %>%
  unnest(data) %>%
- filter(!parameter %in% c("(Intercept)","aspen1","day_prop","overlap","log_fire_size")) %>%  
+ filter(!parameter %in% c("(Intercept)","day_prop","overlap")) %>%  
  mutate(
   # Extract species names from parameters
   fortyp = case_when(
@@ -372,97 +441,222 @@ tidy.effects.frp <- tidy.effects.frp %>%
               "Gambel oak", "Piñon-juniper", "Ponderosa pine",
               "Spruce-fir", "Quaking aspen")))
 
+# Get 95% CI bounds for each parameter
+ci_summary <- map_dfr(ml.frp.re.sp$marginals.fixed, function(m) {
+ tibble(
+  mean = inla.emarginal(identity, m),
+  lower = inla.qmarginal(0.025, m),
+  upper = inla.qmarginal(0.975, m)
+ )
+}, .id = "parameter") %>%
+ left_join(
+  tidy.effects.frp %>% 
+   select(parameter, fill_species, effect) %>% 
+   distinct(), 
+  by = "parameter"
+ ) %>%
+ drop_na()
+
+
+###########
 # color map
 color_map = c(
- "Aspen proportion" = "#e6ab02",  # Keep orange for direct effect
+ "Aspen proportion" = "#E69F00",  # Keep orange for direct effect
  "VPD-mediated" = "gray80"  # Keep gray for mediation effect
 )
 
-# make the ridge plot
-frp.p1 <- ggplot(tidy.effects.frp, 
-                 aes(x = x, y = fill_species, height = y, 
-                     fill = factor(effect, levels = c("VPD-mediated","Aspen proportion")),
-                     alpha = factor(effect, levels = c("VPD-mediated","Aspen proportion")))) +
- geom_density_ridges(
-  stat = "identity", scale = 1.5, show.legend=T
- ) +
- geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
- labs(
-  x = "",
-  y = "Predominant Forest Type",
-  fill = "Model effect"
- ) +
- scale_fill_manual(
-  values = color_map,
-  guide = guide_legend(title = "Model effect")
- ) +
- scale_alpha_manual(
-  values = c(
-   "Aspen proportion" = 0.95,
-   "VPD-mediated" = 0.6
-  ),
-  guide = "none"  # Hide alpha from legend
- ) +
- coord_cartesian(xlim=c(-0.26,0.51)) +
- theme_classic() +
- theme(
-  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
-  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
-  axis.title.y = element_text(size = 10, margin = margin(r = 12)),
-  axis.title.x = element_blank(),
-  legend.position = c(0.85, 0.80),
-  legend.background = element_rect(
-   fill = scales::alpha("white", 0.6), 
-   color = NA, linewidth = 1),
-  legend.title = element_text(size = 10),
-  legend.text = element_text(size = 9)
- )
-frp.p1
 
-#######################################
-# Version 2: no Gambel oak or White fir
-frp.p1.1 <- tidy.effects.frp %>%
- filter(!fill_species %in% c("Gambel oak", "White fir", "Piñon-juniper")) %>%
- ggplot(., aes(x = x, y = fill_species, height = y,
-               fill = factor(effect, levels = c("VPD-mediated","Aspen proportion")),
-               alpha = factor(effect, levels = c("VPD-mediated","Aspen proportion")))) +
- geom_density_ridges(
-  stat = "identity", scale = 1.5, show.legend=T) +
- geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
- labs(
-  x = "",
-  y = "Predominant Forest Type",
-  fill = "Model effect"
- ) +
- scale_fill_manual(
-  values = color_map,
-  guide = guide_legend(title = "Model effect")
- ) +
- scale_alpha_manual(
-  values = c(
-   "Aspen proportion" = 0.95,
-   "VPD-mediated" = 0.6
-  ),
-  guide = "none"  # Hide alpha from legend
- ) +
- coord_cartesian(xlim=c(-0.268,0.51)) +
- theme_minimal() +
- theme(
-  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
-  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
-  axis.title.y = element_text(size = 10, margin = margin(r = 12)),
-  axis.title.x = element_blank(),
-  legend.position = c(0.85, 0.80),
-  legend.background = element_rect(
-   fill = scales::alpha("white", 0.6), 
-   color = NA, size = 1),
-  legend.title = element_text(size = 10),
-  legend.text = element_text(size = 9)
- )
-frp.p1.1
+#######################
+# make the ridge plot #
+# sort the factors by effect
+aspen_order <- tidy.effects.frp %>%
+ filter(effect == "Aspen proportion") %>%
+ group_by(fill_species) %>%
+ summarize(mean_effect = mean(x, na.rm = TRUE)) %>%
+ arrange(-mean_effect) %>%  # for most negative at top
+ pull(fill_species)
 
+# plot it
+(frp.p1 <- tidy.effects.frp %>%
+  mutate(fill_species = factor(fill_species, levels = aspen_order)) %>%
+  ggplot(., aes(
+   x = x, y = fill_species, height = y, 
+   fill = factor(effect, levels = c("VPD-mediated","Aspen proportion")),
+   alpha = factor(effect, levels = c("VPD-mediated","Aspen proportion")))
+  ) + 
+  
+  geom_density_ridges(stat = "identity", scale = 1.5, show.legend=T) +
+  
+  # geom_pointrange(
+  #  data = ci_summary,
+  #  aes(x = mean, xmin = lower, xmax = upper, y = fill_species),
+  #  inherit.aes = FALSE,
+  #  shape = 21, size = 0.3,
+  #  stroke = 0.3,
+  #  fill = "black",
+  #  color = "black"
+  # ) +
+  
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+   x = "",
+   y = "Predominant Forest Type",
+   fill = "Model effect"
+  ) +
+  scale_fill_manual(
+   values = color_map,
+   guide = guide_legend(title = "Model effect")
+  ) +
+  scale_alpha_manual(
+   values = c(
+    "Aspen proportion" = 0.95,
+    "VPD-mediated" = 0.6
+   ),
+   guide = "none"  # Hide alpha from legend
+  ) +
+  # add a subplot label
+  annotate("text", x = -0.48, y = 8.8,
+           label = expression(bold("(A)") ~ "FRPc"),
+           size = 4, hjust = 0.2) +
+  coord_cartesian(xlim=c(-0.52,0.66)) +
+  theme_classic() +
+  theme(
+   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+   axis.title.y = element_text(size = 11, margin = margin(r = 12)),
+   axis.title.x = element_blank(),
+   legend.position = c(0.85, 0.88),
+   legend.background = element_rect(
+    fill = scales::alpha("white", 0.6), 
+    color = NA, linewidth = 1),
+   legend.title = element_text(size = 11),
+   legend.text = element_text(size = 10)
+  ))
+# save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP_fortyp.png')
+ggsave(out_png, plot = frp.p1, dpi = 500, width = 7, height = 5, bg = 'white')
 
+#############
+# version two
 
+###########
+# color map
+color_map = c(
+ "Aspen proportion" = "#E69F00",  # Keep orange for direct effect
+ "VPD-mediated" = "#E69F00"  # Keep gray for mediation effect
+)
+
+(frp.p1.1 <- tidy.effects.frp %>%
+  mutate(fill_species = factor(fill_species, levels = aspen_order)) %>%
+  arrange(match(effect, c("VPD-mediated", "Aspen proportion"))) %>%
+  ggplot(., aes(x = x, y = fill_species, height = y,
+                fill = effect,
+                alpha = effect,
+                color = effect
+  )) +
+  geom_density_ridges(stat = "identity", scale = 1.5, aes(alpha = effect)) +
+  # geom_density_ridges(stat = "identity", scale = 1.5, color = NA, alpha = 0) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+   x = "Effect size",
+   y = "Predominant Forest Type",
+   fill = "Effect"
+  ) +
+  scale_fill_manual(
+   values = c(
+    "Aspen proportion" = "#E69F00",
+    "VPD-mediated" = scales::alpha("#E69F00", 0.3)
+   ),
+   labels = c(
+    "Aspen proportion" = "Aspen dominance (basal area)",
+    "VPD-mediated" = "VPD × aspen dominance"
+   ),
+   guide = guide_legend(
+    override.aes = list(
+     fill = c("#E69F00", scales::alpha("#E69F00", 0.3)),
+     alpha = c(1, 0.3),  # Match transparency
+     color = c(
+      scales::alpha("black", 0.7),
+      scales::alpha("#E69F00", 0.3))
+    ),
+    order = 1  # Ensure this legend appears first
+   )
+  ) +
+  scale_alpha_manual(
+   values = c(
+    "VPD-mediated" = 0.4,
+    "Aspen proportion" = 0.98
+   ),
+   guide = "none"
+  ) +
+  scale_color_manual(
+   values = c(
+    "Aspen proportion" = scales::alpha("black", 0.7),
+    "VPD-mediated" = scales::alpha("#E69F00", 0.5)
+   ),
+   guide = "none"
+  ) +
+  # add a subplot label
+  annotate(
+   "text", x = -0.48, y = 8.8,
+   label = expression(bold("(A)") ~ "FRPc"),
+   size = 4, hjust = 0.2
+  ) +
+  theme_classic() +
+  coord_cartesian(xlim=c(-0.52,0.66)) +
+  theme(
+   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+   axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+   axis.title.x = element_blank(),
+   legend.position = c(0.80, 0.88),
+   legend.background = element_rect(
+    fill = scales::alpha("white", 0.6), 
+    color = NA, linewidth = 1),
+   legend.title = element_text(size = 10),
+   legend.text = element_text(size = 9)
+  ))
+
+# #######################################
+# # Version 2: no Gambel oak or White fir
+# (frp.p1.1 <- tidy.effects.frp %>%
+#  filter(!fill_species %in% c("Gambel oak", "White fir")) %>%
+#  ggplot(., aes(x = x, y = fill_species, height = y,
+#                fill = factor(effect, levels = c("VPD-mediated","Aspen proportion")),
+#                alpha = factor(effect, levels = c("VPD-mediated","Aspen proportion")))) +
+#  geom_density_ridges(
+#   stat = "identity", scale = 1.5, show.legend=T) +
+#  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+#  labs(
+#   x = "",
+#   y = "Predominant Forest Type",
+#   fill = "Model effect"
+#  ) +
+#  scale_fill_manual(
+#   values = color_map,
+#   guide = guide_legend(title = "Model effect")
+#  ) +
+#  scale_alpha_manual(
+#   values = c(
+#    "Aspen proportion" = 0.95,
+#    "VPD-mediated" = 0.6
+#   ),
+#   guide = "none"  # Hide alpha from legend
+#  ) +
+#  # coord_cartesian(xlim=c(-0.268,0.51)) +
+#  theme_classic() +
+#  theme(
+#   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+#   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+#   axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+#   axis.title.x = element_blank(),
+#   legend.position = c(0.85, 0.88),
+#   legend.background = element_rect(
+#    fill = scales::alpha("white", 0.6), 
+#    color = NA, linewidth = 1),
+#   legend.title = element_text(size = 10),
+#   legend.text = element_text(size = 9)
+#  ))
 
 
 #==========#
@@ -470,157 +664,61 @@ frp.p1.1
 ########################
 # COMPOSITE BURN INDEX #
 
+da <- da %>%
+ # gamma requires strictly positive
+ # CBI = 0 is likely "unburned" but had some FRP detection
+ mutate(CBIbc_p90 = CBIbc_p90 + 1e-6)
+
 #################################################
 # 1. Baseline model (no random or latent effects)
 
 # setup the model formula
-mf.cbi <- CBIbc_p90 ~ 1 + 
- grid_aspen + # grid-level aspen presence
- # vpd * aspen_qmd_live + # grid-level aspen QMD
- vpd * (fortypnm_gp:aspen_ba_pr) + # maj. forest type by aspen live basal area * VPD
- H_tpp + # grid-level diversity metric
- canopypct + # grid-level canopy percent
- erc_dv + vpd + vs + # day-of-burn climate/weather
- elev + slope + tpi + chili # grid-level topography
+mf.cbi <- CBIbc_p90 ~ 1 +
+ vpd * (fortypnm_gp:aspen_ba_pr) + 
+ fortyp_pct + # forest type percent cover
+ lf_canopy + # gridcell forest canopy percent
+ tpp_dead_total + # proportion live/dead basal area
+ tpp_live_total + # total trees/pixel
+ erc_dv + vs + # day-of-burn climate/weather
+ elev + slope + northness + tpi + # topography 
+ overlap + # gridcell VIIRS overlap (cumulative)
+ day_prop + # gridcell proportion daytime detections 
+ dist_to_perim + # gridcell distance to perimeter
+ grid_aspen + # gridcell aspen presence
+ # random effects
+ f(Fire_ID, model = "iid", hyper = pr.pc_prec)
+
 # fit the model
 ml.cbi <- inla(
  mf.cbi, data = da,
  family = "gamma",
  control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
- control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
- ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
+ control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+ control.fixed = pr.fixed, # regularization on fixed effects
+ control.family = pr.family # on the Gaussian observation
 )
-summary(ml.cbi)
-# check on predictive power of the random effects models
+summary(ml.cbi) # model summary table
+# check on predictive power (CPO)
 mean(ml.cbi$cpo$cpo, na.rm = TRUE)
-
-
-######################################
-# 2. Baseline + Temporal Random Effect
-
-# update the model formula
-mf.cbi.re <- update(
- mf.cbi, . ~ 1 + . + 
-  f(first_obs_date, model = "iid", 
-    hyper = list(
-     prec = list(prior = "pc.prec", param = c(0.5, 0.01))
-    )) # temporal random effect
-)
-# fit the model
-ml.cbi.re <- inla(
- mf.cbi.re, data = da,
- family = "gamma",
- control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
- control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
- ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
-)
-summary(ml.cbi.re)
-# check on predictive power of the random effects models
-mean(ml.cbi.re$cpo$cpo, na.rm = TRUE)
-
-
-###################################################
-# 3. Baseline + Temporal + Fire-level Random Effect
-
-# update the model formula
-mf.cbi.re2 <- update(
- mf.cbi.re, . ~ 1 + . + 
-  f(fire_id, model = "iid", 
-    hyper = list(
-     prec = list(prior = "pc.prec", param = c(0.5, 0.01))
-    )) # fire-level random effect
-)
-# fit the model
-ml.cbi.re2 <- inla(
- mf.cbi.re2, data = da,
- family = "gaussian",
- control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
- control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
- ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
-)
-summary(ml.cbi.re2)
-# check on predictive power of the random effects models
-mean(ml.cbi.re2$cpo$cpo, na.rm = TRUE)
-
 
 
 #######################
 # 4. Spatial SPDE model
 
-# extracting spatial coordinates for grid centroids
-grid_sf <- da %>%
- arrange(grid_index) %>%
- st_as_sf(., coords = c("x", "y"), crs = 4326)
-# extract coordinates
-coords <- grid_sf %>% st_coordinates(.)
-# convert coordinates to a matrix for INLA
-coords_mat <- as.matrix(coords) 
-
-# Define the spatial mesh
-mesh <- inla.mesh.2d(
- loc = coords_mat, # Locations (grid centroids)
- max.edge = c(1, 20), # Maximum edge lengths (inner and outer)
- cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
- offset = c(0.5, 0.1) # Boundary buffer
-)
-# Plot mesh to check
-plot(mesh, main = "SPDE Mesh for FRP Model")
-points(coords, col = "red", pch = 20)
-
-rm(coords)
-gc()
-
 ######################
-# Build the SPDE model
-spde.ml <- inla.spde2.pcmatern(
- # Mesh and smoothness parameter
- mesh = mesh, 
- alpha = 2,
- # P(practic.range < 0.3) = 0.5
- prior.range = c(0.1, 0.5),
- # P(sigma > 1) = 0.01
- prior.sigma = c(0.5, 0.01) # variance
-)
-
-# Compute the projector matrix (A)
-A <- inla.spde.make.A(
- mesh = mesh,
- loc = coords_mat
-)
-
-# Assign the spatial index
-field.idx <- inla.spde.make.index(
- name = "mesh.idx",
- n.spde = spde.ml$n.spde
-)
-str(field.idx)
+# Spatial SPDE model #
 
 # Extract the predictor variables
 X <- da %>% 
- select(fire_id, first_obs_date, grid_index, grid_aspen,
-        fortypnm_gp, total_tpp, forest_pct, canopypct, 
-        H_tpp, H_ba, aspen_ba_pr, aspen_qmd_live, aspen_tpp_pr, 
-        erc_dv, vpd, vs, slope, tpi, chili, elev,
-        day_prop, afd_count, overlap)
-head(X)
+ select(Fire_ID, first_obs_date, grid_index,
+        aspen_ba_live, aspen_tpp_live, aspen_ht_live, 
+        aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, 
+        fortypnm_gp, fortyp_pct, species_gp_n,  
+        tpp_live, tpp_live_pr, ba_live, ba_live_pr,    
+        lf_canopy, H_tpp, H_ba, ba_dead_total,
+        erc_dv, vpd, vs, elev, slope, northness, tpi,
+        tpp_live_total, tpp_dead_total,
+        grid_aspen, day_prop, overlap, dist_to_perim)
 
 # Create the INLA data stack
 stack.cbi <- inla.stack(
@@ -633,34 +731,29 @@ stack.cbi <- inla.stack(
  )
 )
 dim(inla.stack.A(stack.cbi))
-
-rm(grid_sf, X)
+rm(X,coords_mat,field.idx,mesh)
 gc()
 
 ##########################
 # update the model formula
-mf.cbi.re.sp <- update(
- mf.cbi.re2, . ~ 1 + . + 
+mf.cbi.sp <- update(
+ mf.cbi, . ~ 1 + . + 
   f(mesh.idx, model = spde.ml) # spatial process model
 )
 # fit the model
 ml.cbi.re.sp <- inla(
- mf.cbi.re.sp, 
+ mf.cbi.sp, 
  data = inla.stack.data(stack.cbi), ,
  family = "gaussian",
  control.predictor = list(A = inla.stack.A(stack.cbi), compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
- control.fixed = list(
-  prec = list(prior = "loggamma", param = c(0.5, 0.1))
- ),
- control.family = list(
-  hyper = list(prec = list(prior = "loggamma", param = c(0.5, 0.1)))
- ),
- control.inla = list(strategy = "adaptive", int.strategy = "grid")
+ control.fixed = pr.fixed, # regularization on fixed effects
+ control.family = pr.family # on the Gaussian observation
 )
 summary(ml.cbi.re.sp)
 mean(ml.cbi.re.sp$cpo$cpo, na.rm = TRUE)
 
+rm(A,spde.ml,stack.cbi) # tidy up
 
 
 #===========POSTERIOR EFFECTS===========#
@@ -675,6 +768,7 @@ tidy.effects.cbi <- tibble::tibble(
  data = purrr::map(cbi_marginals, ~ as.data.frame(.x))
 ) %>%
  unnest(data) %>%
+ filter(!parameter %in% c("(Intercept)","day_prop","overlap")) %>%  
  mutate(
   # Extract species names from parameters
   fortyp = case_when(
@@ -685,81 +779,373 @@ tidy.effects.cbi <- tibble::tibble(
  drop_na() %>%
  # tidy the parameter
  mutate(
-  parameter = case_when(
-   str_detect(parameter, "vpd:") ~ "VPD-mediated",
-   TRUE ~ "Quaking aspen live BA"
+  effect = case_when(
+   str_detect(parameter, "vpd:") ~ "VPD-mediated",  
+   str_detect(parameter, ":aspen_ba_pr") & 
+    !str_detect(parameter, "vpd:")  ~ "Aspen proportion",
+   TRUE ~ "Gloabl effect"  # For non-species effects
   ),
   # handle forest type names
   fortyp = recode(
    fortyp,
-   "mixed_conifer" = "Mixed-conifer",
-   "lodgepole" = "Lodgepole",
-   "ponderosa" = "Ponderosa",
-   "spruce_fir" = "Spruce-fir",
+   "quaking_aspen" = "Quaking aspen",
+   "lodgepole_pine" = "Lodgepole pine",
+   "douglas_fir" = "Douglas-fir",
+   "white_fir" = "White fir",
+   "gambel_oak" = "Gambel oak",
    "piñon_juniper" = "Piñon-juniper",
-   "quaking_aspen" = "Quaking aspen"
+   "ponderosa_pine" = "Ponderosa pine",
+   "spruce_fir" = "Spruce-fir"
   )
- )
+ ) %>%
+ # Calculate mean effect size for ordering
+ group_by(effect) %>%
+ mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
+ ungroup() 
+glimpse(tidy.effects.cbi)
 
-# sort the dataframe by mean effect (non VPD-mediated)
-order.df <- tidy.effects.cbi %>%
- filter(parameter == "Quaking aspen live BA") %>%
- group_by(fortyp) %>%
- summarise(effect_mn = mean(x, na.rm = TRUE), .groups = "drop") %>%
- arrange(desc(effect_mn))  # Sort by mean effect
 # reorder the factors
 tidy.effects.cbi <- tidy.effects.cbi %>%
- left_join(order.df, by = "fortyp") %>%  # Merge mean effect values
- mutate(fortyp = factor(fortyp, levels = order.df$fortyp))  # Apply ordered factor levels
-rm
-# Verify ordering
-levels(tidy.effects.cbi$fortyp)
-head(tidy.effects.cbi)
+ mutate(
+  effect_order = case_when(
+   !is.na(fortyp) ~ 2,  # Species-specific effects
+   TRUE ~ 2              # Global effects
+  ),
+  effect = factor(effect, levels = tidy.effects.cbi %>%
+                   arrange(effect_order, desc(mean_effect)) %>%
+                   pull(effect) %>%
+                   unique()),
+  fill_species = ifelse(is.na(fortyp), "Global effect", fortyp)
+ ) %>%
+ mutate(fill_species = recode(
+  fill_species,
+  "quaking_aspen" = "Quaking aspen",
+  "lodgepole_pine" = "Lodgepole pine",
+  "douglas_fir" = "Douglas-fir",
+  "white_fir" = "White fir",
+  "gambel_oak" = "Gambel oak",
+  "piñon_juniper" = "Piñon-juniper",
+  "ponderosa_pine" = "Ponderosa pine",
+  "spruce_fir" = "Spruce-fir"
+ )) %>%
+ mutate(
+  fill_species = factor(
+   fill_species,
+   levels = c("Lodgepole pine", "Douglas-fir", "White fir",
+              "Gambel oak", "Piñon-juniper", "Ponderosa pine",
+              "Spruce-fir", "Quaking aspen")))
 
-# make the ridge plot
-cbi.p1 <- ggplot(tidy.effects.cbi, 
-                 aes(x = x, y = fortyp, height = y, 
-                     fill = factor(parameter, levels = c("Quaking aspen live BA", "VPD-mediated")),
-                     alpha = factor(parameter, levels = c("Quaking aspen live BA", "VPD-mediated")))) +
- geom_density_ridges(
-  stat = "identity", scale = 1.5, show.legend=F) +
+###########
+# color map
+color_map = c(
+ "Aspen proportion" = "#E69F00",  # Keep orange for direct effect
+ "VPD-mediated" = "gray80"  # Keep gray for mediation effect
+)
+
+#######################
+# make the ridge plot #
+
+# plot it
+(cbi.p1 <- tidy.effects.cbi %>%
+  mutate(fill_species = factor(fill_species, levels = aspen_order)) %>%
+  arrange(match(effect, c("VPD-mediated", "Aspen proportion"))) %>%
+  ggplot(., aes(
+   x = x, y = fill_species, height = y, 
+   fill = factor(effect, levels = c("Aspen proportion", "VPD-mediated")),
+   alpha = factor(effect, levels = c("Aspen proportion", "VPD-mediated")))
+  ) + 
+  geom_density_ridges(stat = "identity", scale = 1.5, show.legend=T) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+   x = "",
+   y = "Predominant Forest Type"
+  ) +
+  scale_fill_manual(
+   values = color_map,
+   guide = guide_legend(title = "Effect type"),
+   labels = c(
+    "Aspen proportion" = "Aspen dominance (basal area)",
+    "VPD-mediated" = "VPD × aspen dominance"
+   )
+  ) +
+  scale_alpha_manual(
+   values = c(
+    "VPD-mediated" = 0.6,
+    "Aspen proportion" = 0.95
+   ),
+   guide = "none"  # Hide alpha from legend
+  ) +
+  # add a subplot label
+  annotate("text", x = -0.48, y = 8.8,
+           label = expression(bold("(B)") ~ "CBIbc"),
+           size = 4, hjust = 0.2) +
+  coord_cartesian(xlim=c(-0.52,0.66)) +
+  theme_classic() +
+  theme(
+   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+   axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+   axis.title.x = element_blank(),
+   legend.position = c(0.85, 0.88),
+   legend.background = element_rect(
+    fill = scales::alpha("white", 0.6), 
+    color = NA, linewidth = 1),
+   legend.title = element_text(size = 10),
+   legend.text = element_text(size = 9)
+  ))
+# save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_CBI_fortyp.png')
+ggsave(out_png, plot = cbi.p1, dpi = 500, width = 7, height = 5, bg = 'white')
+
+
+#############
+# version two
+
+###########
+# color map
+color_map = c(
+ "Aspen proportion" = "#E69F00",  # Keep orange for direct effect
+ "VPD-mediated" = "#E69F00"  # Keep gray for mediation effect
+)
+
+(cbi.p1.1 <- tidy.effects.cbi %>%
+ mutate(fill_species = factor(fill_species, levels = aspen_order)) %>%
+ arrange(match(effect, c("VPD-mediated", "Aspen proportion"))) %>%
+ ggplot(., aes(x = x, y = fill_species, height = y,
+               fill = effect,
+               alpha = effect,
+               color = effect
+           )) +
+ geom_density_ridges(stat = "identity", scale = 1.5, aes(alpha = effect)) +
+ # geom_density_ridges(stat = "identity", scale = 1.5, color = NA, alpha = 0) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
  labs(
-  x = "Effect Size",
+  x = "Effect size",
   y = "Predominant Forest Type",
+  fill = "Effect"
+ ) +
+  scale_fill_manual(
+   values = c(
+    "Aspen proportion" = "#E69F00",
+    "VPD-mediated" = scales::alpha("#E69F00", 0.3)
+   ),
+   labels = c(
+    "Aspen proportion" = "Aspen dominance (basal area)",
+    "VPD-mediated" = "VPD × aspen dominance"
+   ),
+   guide = guide_legend(
+    override.aes = list(
+     fill = c("#E69F00", scales::alpha("#E69F00", 0.3)),
+     alpha = c(1, 0.3),  # Match transparency
+     color = c(
+      scales::alpha("black", 0.7),
+      scales::alpha("#E69F00", 0.3))
+    ),
+    order = 1  # Ensure this legend appears first
+   )
+ ) +
+ scale_alpha_manual(
+  values = c(
+   "VPD-mediated" = 0.4,
+   "Aspen proportion" = 0.98
+  ),
+  guide = "none"
+ ) +
+ scale_color_manual(
+  values = c(
+   "Aspen proportion" = scales::alpha("black", 0.7),
+   "VPD-mediated" = scales::alpha("#E69F00", 0.5)
+  ),
+  guide = "none"
+ ) +
+  # add a subplot label
+  annotate(
+   "text", x = -0.48, y = 8.8,
+   label = expression(bold("(B)") ~ "CBIbc"),
+   size = 4, hjust = 0.2
+  ) +
+  theme_classic() +
+  coord_cartesian(xlim=c(-0.52,0.66)) +
+  theme(
+   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+   axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+   axis.title.x = element_blank(),
+   legend.position = c(0.80, 0.88),
+   legend.background = element_rect(
+    fill = scales::alpha("white", 0.6), 
+    color = NA, linewidth = 1),
+   legend.title = element_text(size = 10),
+   legend.text = element_text(size = 9)
+  ))
+
+# #######################################
+# # Version 2: no Gambel oak or White fir
+# (cbi.p1.1 <- tidy.effects.cbi %>%
+#   filter(!fill_species %in% c("Gambel oak", "White fir")) %>%
+#   ggplot(., aes(x = x, y = fill_species, height = y,
+#                 fill = factor(effect, levels = c("VPD-mediated","Aspen proportion")),
+#                 alpha = factor(effect, levels = c("VPD-mediated","Aspen proportion")))) +
+#   geom_density_ridges(
+#    stat = "identity", scale = 1.5, show.legend=T) +
+#   geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+#   labs(
+#    x = "",
+#    y = "Predominant Forest Type",
+#    fill = "Model effect"
+#   ) +
+#   scale_fill_manual(
+#    values = color_map,
+#    guide = guide_legend(title = "Model effect")
+#   ) +
+#   scale_alpha_manual(
+#    values = c(
+#     "Aspen proportion" = 0.95,
+#     "VPD-mediated" = 0.6
+#    ),
+#    guide = "none"  # Hide alpha from legend
+#   ) +
+#   # coord_cartesian(xlim=c(-0.268,0.51)) +
+#   theme_classic() +
+#   theme(
+#    axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+#    axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+#    axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+#    axis.title.x = element_blank(),
+#    legend.position = c(0.85, 0.88),
+#    legend.background = element_rect(
+#     fill = scales::alpha("white", 0.6), 
+#     color = NA, size = 1),
+#    legend.title = element_text(size = 10),
+#    legend.text = element_text(size = 9)
+#   ))
+
+
+########################################
+# Make a combined figure (FRP and CBI) #
+# remove the legend from one of them
+cbi.p1.1 <- cbi.p1.1 +
+ theme(legend.position="none")
+# merge them
+frp.cbi.p1 <- frp.p1.1 / cbi.p1.1 # "/" stacks, "|" side-by-side
+frp.cbi.p1
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP-CBI_fortyp-VPD_panel.png')
+ggsave(out_png, plot = frp.cbi.p1, dpi = 500, width = 7, height = 5, bg = 'white')
+
+
+
+###################################
+# OPTION TWO: COMBINED RIDGE PLOT #
+
+# Create the combined forest type relative to aspen
+tidy.effects.frp$response <- "FRPc"
+tidy.effects.cbi$response <- "CBIbc"
+fortyp_effects <- bind_rows(tidy.effects.frp, tidy.effects.cbi) %>%
+ filter(str_detect(parameter, "fortypnm_gp"),
+        !str_detect(parameter, ":fortyp_pct")) %>%
+ mutate(
+  group = case_when(
+   str_detect(parameter, "vpd:") ~ "VPD-mediated",
+   TRUE ~ "Aspen live basal area"  # Default for all other fixed effects
+  )) %>%
+ group_by(fill_species) %>%
+ mutate(mean_effect = mean(x, na.rm = TRUE)) %>%
+ ungroup() %>%
+ mutate(fill_species = fct_reorder(fill_species, -mean_effect))%>%
+ # reorder the effects so main effect is drawn on top
+ mutate(
+  group = factor(group, levels = c("VPD-mediated", "Aspen live basal area")),
+  fill_cat = factor(
+   paste0(group, " (", response, ")"),
+   levels = c(
+    "VPD-mediated (CBIbc)", "VPD-mediated (FRPc)",
+    "Aspen live basal area (CBIbc)", "Aspen live basal area (FRPc)"
+   ))
+ )
+glimpse(fortyp_effects)
+
+# order the forest types from low->high on the main effect
+forest_order <- fortyp_effects %>%
+ filter(fill_cat == "Aspen live basal area (FRPc)") %>%
+ group_by(fill_species) %>%
+ summarize(mean_effect = mean(x, na.rm = TRUE)) %>%
+ arrange(mean_effect)
+# apply the ordering
+fortyp_effects$fill_species <- factor(
+ fortyp_effects$fill_species, 
+ levels = rev(forest_order$fill_species)
+)
+
+##########################
+# Plot with VPD-mediation
+(p3 <- ggplot(fortyp_effects, 
+                aes(x = x, y = fill_species, height = y,
+                    fill = fill_cat,
+                    alpha = fill_cat,
+                    color = fill_cat)) +
+ geom_density_ridges(stat = "identity", scale = 1.5) +
+ geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+ labs(
+  x = "Effect size",
+  y = "Predominant Forest Type",
+  fill = "Effect Type",
  ) +
  scale_fill_manual(
   values = c(
-   "Quaking aspen live BA" = "#1b9e77",
-   "VPD-mediated" = "gray80"
+   "Aspen live basal area (FRPc)" = "#FEB24C",
+   "VPD-mediated (FRPc)" = scales::alpha("#FEB24C", 0.3),
+   "Aspen live basal area (CBIbc)" = "#800026",
+   "VPD-mediated (CBIbc)" = scales::alpha("#800026", 0.3)
+  ),
+  labels = c(
+   "Aspen live basal area (FRPc)", "VPD-mediated (FRPc)",
+   "Aspen live basal area (CBIbc)", "VPD-mediated (CBIbc)"
+  ),
+  guide = guide_legend(
+   override.aes = list(
+    fill = c("#FEB24C", scales::alpha("#FEB24C", 0.3),
+             "#800026", scales::alpha("#800026", 0.3)),
+    alpha = c(1, 0.4, 1, 0.4),  # Match transparency
+    color = c(
+     scales::alpha("black", 0.7),
+     scales::alpha("#FEB24C", 0.4),
+     scales::alpha("black", 0.7),
+     scales::alpha("#800026", 0.4))
+   ),
+   order = 1  # Ensure this legend appears first
   )
  ) +
  scale_alpha_manual(
   values = c(
-   "Quaking aspen live BA" = 0.9,
-   "VPD-mediated" = 0.7
+   "Aspen live basal area (FRPc)" = 1,
+   "VPD-mediated (FRPc)" = 0.4,
+   "Aspen live basal area (CBIbc)" = 1,
+   "VPD-mediated (CBIbc)" = 0.4
   ),
-  guide = "none"  # Hide alpha from legend
+  guide = "none"
  ) +
- coord_cartesian(xlim=c(-0.26,0.51)) +
- theme_minimal() +
- theme(
-  axis.text.y = element_text(angle = 0, hjust = 1, size=9),
-  axis.text.x = element_text(angle = 0, hjust = 0, size=9),
-  axis.title.y = element_text(size = 10, margin = margin(r = 12)),
-  axis.title.x = element_text(size = 10, margin = margin(t = 12))
- )
-cbi.p1
-
-
-# Make a combined figure (FRP and CBI)
-# Load the two ridge plots (assuming they are `frp_plot` and `cbi_plot`)
-frp.cbi.p1 <- frp.p1 / cbi.p1 # "/" stacks them, "|" would place them side-by-side
-frp.cbi.p1
-
+ scale_color_manual(
+  values = c(
+   "Aspen live basal area (FRPc)" = scales::alpha("black", 0.7),
+   "VPD-mediated (FRPc)" = scales::alpha("#FEB24C", 0.4),
+   "Aspen live basal area (CBIbc)" = scales::alpha("black", 0.7),
+   "VPD-mediated (CBIbc)" = scales::alpha("#800026", 0.4)
+  ),
+  guide = "none"
+ ) +
+ # coord_cartesian(xlim=c(-0.38,0.44)) +
+ theme_classic() +
+ theme(axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+       axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+       axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+       axis.title.x = element_text(size = 10, margin = margin(t = 12)),
+       legend.position = c(0.82, 0.84),
+       legend.background = element_rect(
+        fill = scales::alpha("white", 0.4),
+        color = NA, size = 0.8),
+       legend.title = element_text(size = 9),
+       legend.text = element_text(size = 8)))
 # Save the plot
-out_png <- paste0(maindir, 'figures/INLA_ASPEN_VPD_FRP-CBI_fortyp.png')
-ggsave(out_png, plot = frp.cbi.p1,
-       width = 6, height = 5, bg = 'white')
-
-
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP-CBI_fortyp-VPD.png.png')
+ggsave(out_png, plot = p3, dpi = 500, width = 7, height = 4, bg = 'white')
