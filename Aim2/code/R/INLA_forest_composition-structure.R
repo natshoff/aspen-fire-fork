@@ -60,23 +60,16 @@ grid_tm <- read_csv(fp) %>%
   log_frp_csum, CBIbc_p90, CBIbc_p95, CBIbc_p99, 
   x, y, aspen_ba_pr, aspen_tpp_pr, fire_aspen, grid_aspen,
   dom_sp_ba, dom_sp_tpp, dom_sp_ht, dom_sp_dia
+ ) %>%
+ mutate(
+  # calculate a couple additional metrics
+  # height-diameter ratio (HDR)
+  hdr_live = ht_live / dia_live,
+  # adjusted metrics (based on species specific tree abundance)
+  hdr_adj = hdr_live * tpp_live, # (structural abundance)
+  ba_adj = ba_live / tpp_live # total basal area scaled by tree abundance
  )
 glimpse(grid_tm)
-
-
-###################################################
-# check how many grids are majority forested, etc #
-print(length(unique(grid_tm$grid_idx))) # unique gridcells
-# percent of gridcells majority forested
-# Check how many grids are > 50% forested
-print(paste0(
- "Percent forested gridcells (>50% gridcell area): ",
- round(dim(grid_tm %>% filter(forest_pct > 0.50) %>% distinct(grid_idx))[1]/
-        dim(grid_tm %>% distinct(grid_idx))[1], 3) * 100, "%"
-))
-# # retain predominantly forested gridcells ...
-# grid_tm <- grid_tm %>%
-#  filter(forest_pct >= 0.50)
 
 
 ##########################################
@@ -102,6 +95,21 @@ summary(gridcell_counts$n_gridcells)
 #  ungroup()
 # tidy up!
 rm(gridcell_counts,qt)
+
+
+###################################################
+# check how many grids are majority forested, etc #
+print(length(unique(grid_tm$grid_idx))) # unique gridcells
+# percent of gridcells majority forested
+# Check how many grids are > 50% forested
+print(paste0(
+ "Percent forested gridcells (>50% gridcell area): ",
+ round(dim(grid_tm %>% filter(forest_pct > 0.50) %>% distinct(grid_idx))[1]/
+        dim(grid_tm %>% distinct(grid_idx))[1], 3) * 100, "%"
+))
+# # retain predominantly forested gridcells ...
+# grid_tm <- grid_tm %>%
+#  filter(forest_pct >= 0.50)
 
 
 ##################################################
@@ -135,8 +143,8 @@ ggplot(grid_tm, aes(x = ba_live_pr)) +
 
 # check percentage of rows below the threshold
 1 - dim(grid_tm %>% filter(
- ba_live_pr >= qt.ba[3,]$val |
-  tpp_live_pr >= qt.tpp[3,]$val
+ ba_live_pr >= qt.ba[2,]$val |
+  tpp_live_pr >= qt.tpp[2,]$val
 ))[1] / dim(grid_tm)[1]
 
 # filter species contributing less than the 10th percentile
@@ -145,8 +153,9 @@ grid_tm <- grid_tm %>%
  filter(
   # remove noise from small species proportions
   # (ba_live_pr >= 0.10)
+  (ba_live_pr >= 0.05 & tpp_live_pr >= qt.tpp[2,]$val)
   # either tpp or ba over their 10th percentile
-  (ba_live_pr >= qt.ba[2,]$val | tpp_live_pr >= qt.tpp[2,]$val)
+  # (ba_live_pr >= qt.ba[3,]$val | tpp_live_pr >= qt.tpp[3,]$val)
  )
 rm(qt.ba, qt.tpp)
 
@@ -215,7 +224,8 @@ da <- grid_tm %>%
   fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen"),
   # center/scale metrics / fixed effects
   across(
-   c(ba_live, tpp_live, qmd_live, ht_live, dia_live, # species structure metrics
+   c(ba_live, tpp_live, qmd_live, ba_adj, # species structure metrics
+     ht_live, dia_live, hdr_live, hdr_adj, # species structure metrics
      ba_live_pr, tpp_live_pr, # proportion TPP and BA
      ba_live_total, tpp_live_total, qmd_live_mean, # gridcell structural summaries
      ba_dead_total, tpp_dead_total, # dead structure
@@ -247,7 +257,7 @@ levels(da$fortypnm_gp)
 #  select(
 #   fortypnm_gp,
 #   # species structure metrics
-#   tpp_live, ba_live, qmd_live, ht_live, dia_live,
+#   tpp_live, ba_live, qmd_live, ht_live, dia_live, hdr_live, ba_adj, # species structure metrics
 #   tpp_live_pr, ba_live_pr, # proportions of TPP and BA
 #   ba_live_total, tpp_live_total, qmd_live_mean, # gridcell structural summaries
 #   ba_dead_total, tpp_dead_total, # dead BA and TPP
@@ -294,7 +304,7 @@ levels(da$fortypnm_gp)
 # da %>%
 #  group_by(species_gp_n) %>%
 #  summarise(corr = list(
-#   cor.test(ba_live, tpp_live, method = "spearman", exact = FALSE)
+#   cor.test(ba_live, tpp_live_pr, method = "spearman", exact = FALSE)
 #  )) %>%
 #  mutate(tidy_result = map(corr, broom::tidy)) %>%
 #  unnest(tidy_result) %>%
@@ -308,7 +318,15 @@ levels(da$fortypnm_gp)
 #  mutate(tidy_result = map(corr, broom::tidy)) %>%
 #  unnest(tidy_result) %>%
 #  select(species_gp_n, estimate, p.value, method)
-# 
+# # forest percent and proportion TPP
+# da %>%
+#  group_by(species_gp_n) %>%
+#  summarise(corr = list(
+#   cor.test(fortyp_pct, ba_live, method = "spearman", exact = FALSE)
+#  )) %>%
+#  mutate(tidy_result = map(corr, broom::tidy)) %>%
+#  unnest(tidy_result) %>%
+#  select(species_gp_n, estimate, p.value, method)
 # gc()
 
 
@@ -320,7 +338,7 @@ set.seed(456)
 # fixed effects
 pr.fixed <- list(
  prec.intercept = 1e-6, 
- prec = 0.01  # shrinkage prior
+ prec = 1e-6  # shrinkage prior (very weak)
 )
 # for the Gaussian precision
 pr.family <- list(
@@ -346,12 +364,15 @@ mf.frp <- log_frp_csum ~ 1 +
  # forest composition and structure with mediation by VPD
  fortypnm_gp + # majority forest type
  fortypnm_gp:fortyp_pct + # majority forest type by percent cover
- species_gp_n:ba_live + # species live basal area
- # species_gp_n:tpp_live + # proportion of species abundance
+ species_gp_n:ba_live_pr + # species total basal area
+ # species_gp_n:tpp_live + # proportional tree species abundance
+ species_gp_n:hdr_live + # species height-diameter ratio
+ species_gp_n:qmd_live + # species average quadratic mean diameter
+ # species_gp_n:ba_adj + # species average basal area
  # species_gp_n:ht_live + # species average live tree height
  # species_gp_n:dia_live + # species average live tree diameter
- species_gp_n:qmd_live + # species average QMD
  # other fixed effects (global effects)
+ # fortyp_pct + # dominant forest cover percent
  lf_canopy + # gridcell forest canopy cover
  # H_tpp + # gridcell structural diversity (abundance-based)
  tpp_live_total + # gridcell total live tree abundance
@@ -359,14 +380,20 @@ mf.frp <- log_frp_csum ~ 1 +
  # ba_live_total + # gridcell total live tree dominance
  # ba_dead_total + # gridcell total dead tree dominance
  erc_dv + vpd + vs + # day-of-burn fire weather
- elev + slope + northness + tpi + # topography 
+ slope + northness + tpi + # topography 
  overlap + # gridcell VIIRS overlap (cumulative)
  day_prop +  # gridcell proportion daytime detections
  dist_to_perim # gridcell distance to perimeter
 
+# for model dev, just add the fire random effect
+mf.frp.re <- update(
+ mf.frp, . ~ 1 + . + 
+  f(Fire_ID, model = "iid", hyper = pr.pc_prec) 
+)
+
 # fit the model
 ml.frp <- inla(
- mf.frp, data = da,
+ mf.frp.re, data = da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
@@ -378,46 +405,46 @@ summary(ml.frp) # model summary table
 mean(ml.frp$cpo$cpo, na.rm = TRUE)
 
 
-#####################################
-# 2. Baseline + Fire-ID Random Effect
+# #####################################
+# # 2. Baseline + Fire-ID Random Effect
+# 
+# # update the model formula
+# mf.frp.re <- update(
+#  mf.frp, . ~ 1 + . + 
+#   f(Fire_ID, model = "iid", hyper = pr.pc_prec) 
+# )
+# # fit the model
+# ml.frp.re <- inla(
+#  mf.frp.re, data = da,
+#  family = "gaussian",
+#  control.predictor = list(compute=T),
+#  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+#  control.fixed = pr.fixed, # regularization on fixed effects
+#  control.family = pr.family # on the gaussian observation
+# )
+# summary(ml.frp.re)
+# mean(ml.frp.re$cpo$cpo, na.rm = TRUE)
 
-# update the model formula
-mf.frp.re <- update(
- mf.frp, . ~ 1 + . + 
-  f(Fire_ID, model = "iid", hyper = pr.pc_prec) 
-)
-# fit the model
-ml.frp.re <- inla(
- mf.frp.re, data = da,
- family = "gaussian",
- control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
- control.fixed = pr.fixed, # regularization on fixed effects
- control.family = pr.family # on the gaussian observation
-)
-summary(ml.frp.re)
-mean(ml.frp.re$cpo$cpo, na.rm = TRUE)
 
-
-###################################################
-# 3. Baseline + Temporal + Fire-level Random Effect
-
-# update the model formula
-mf.frp.re2 <- update(
- mf.frp.re, . ~ 1 + . + 
-  f(first_obs_date, model = "iid", hyper = pr.pc_prec)
-)
-# fit the model
-ml.frp.re2 <- inla(
- mf.frp.re2, data = da,
- family = "gaussian",
- control.predictor = list(compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
- control.fixed = pr.fixed, # regularization on fixed effects
- control.family = pr.family # on the gaussian observation
-)
-summary(ml.frp.re2)
-mean(ml.frp.re2$cpo$cpo, na.rm = TRUE)
+# ###################################################
+# # 3. Baseline + Temporal + Fire-level Random Effect
+# 
+# # update the model formula
+# mf.frp.re2 <- update(
+#  mf.frp.re, . ~ 1 + . + 
+#   f(first_obs_date, model = "iid", hyper = pr.pc_prec)
+# )
+# # fit the model
+# ml.frp.re2 <- inla(
+#  mf.frp.re2, data = da,
+#  family = "gaussian",
+#  control.predictor = list(compute=T),
+#  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+#  control.fixed = pr.fixed, # regularization on fixed effects
+#  control.family = pr.family # on the gaussian observation
+# )
+# summary(ml.frp.re2)
+# mean(ml.frp.re2$cpo$cpo, na.rm = TRUE)
 
 
 #########################
@@ -475,7 +502,8 @@ X <- da %>%
   Fire_ID, first_obs_date, grid_index, 
   fortypnm_gp, species_gp_n, 
   forest_pct, fortyp_pct, lf_canopy, H_tpp, H_ba, 
-  ba_live, tpp_live, ht_live, dia_live, qmd_live, 
+  ba_live, tpp_live, ht_live, dia_live, 
+  qmd_live, hdr_live, ba_adj,
   tpp_live_pr, ba_live_pr, aspen_ba_pr,
   ba_live_total, ba_dead_total, 
   tpp_live_total, tpp_dead_total,
@@ -512,7 +540,10 @@ ml.frp.re.sp <- inla(
  data = inla.stack.data(stack.frp),
  family = "gaussian",
  control.predictor = list(A = inla.stack.A(stack.frp), compute=T),
- control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+ control.compute = list(
+  dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE,
+  return.marginals = TRUE
+ ),
  control.fixed = pr.fixed, # regularization on fixed effects
  control.family = pr.family # on the Gaussian observation
 )
@@ -523,98 +554,100 @@ mean(ml.frp.re.sp$cpo$cpo, na.rm = TRUE)
 gc()
 
 
-#==========EXTRACTING THE SPATIAL EFFECT===========#
-
-# Compute spatial effect for each grid location
-spat.eff <- A %*% ml.frp.re.sp$summary.random$mesh.idx$mean  # FRP spatial field
-# Compute 2.5% (lower bound) credible interval
-lower <- A %*% ml.frp.re.sp$summary.random$mesh.idx$`0.025quant`
-# Compute 97.5% (upper bound) credible interval
-upper <- A %*% ml.frp.re.sp$summary.random$mesh.idx$`0.975quant`
-# Compute uncertainty as the credible interval width (upper - lower)
-uncertainty <- upper - lower
-# convert to a spatial data frame
-spat.eff.frp <- data.frame(
- x = coords_mat[, 1],  # Longitude
- y = coords_mat[, 2],  # Latitude
- spat_effect = as.vector(spat.eff),  # Convert matrix to vector
- lower = as.vector(lower),  # 2.5% quantile
- upper = as.vector(upper),  # 97.5% quantile
- uncertainty = as.vector(uncertainty),  # CI width
- response = "FRPc"
-) %>%
- distinct(x, y, .keep_all=T) %>%
- st_as_sf(., coords = c("x", "y"), crs = 4326)
-glimpse(spat.eff.frp)
-# write this a spatial file
-out_fp = paste0(maindir,"data/spatial/mod/spatial_effect_FRP_spp.gpkg")
-st_write(spat.eff.frp, out_fp, append=F)
-# Tidy up!
-rm(spat.eff, spat.eff.frp, lower, upper, uncertainty)
-gc()
-
-
-#=================MODEL COMPARISON=================#
-
-# Create a model comparison table
-ml_comparison.frp <- tibble(
- Model = c("Baseline", 
-           "W/Fire Random Effect", 
-           "W/Fire + Temporal Effect",
-           "W/Fire + Temporal + Spatial Effect"),
- Response = "FRP",
- DIC = c(
-  ml.frp$dic$dic,
-  ml.frp.re$dic$dic,
-  ml.frp.re2$dic$dic,
-  ml.frp.re.sp$dic$dic
- ),
- WAIC = c(
-  ml.frp$waic$waic,
-  ml.frp.re$waic$waic,
-  ml.frp.re2$waic$waic,
-  ml.frp.re.sp$waic$waic
- ),
- Marginal_LogLikelihood = c(
-  ml.frp$mlik[1],
-  ml.frp.re$mlik[1],
-  ml.frp.re2$mlik[1],
-  ml.frp.re.sp$mlik[1]
- ),
- Effective_Params = c(
-  ml.frp$dic$p.eff,
-  ml.frp.re$dic$p.eff,
-  ml.frp.re2$dic$p.eff,
-  ml.frp.re.sp$dic$p.eff
- ),
- Mean_CPO = c(
-  mean(ml.frp$cpo$cpo, na.rm = TRUE),
-  mean(ml.frp.re$cpo$cpo, na.rm = TRUE),
-  mean(ml.frp.re2$cpo$cpo, na.rm = TRUE),
-  mean(ml.frp.re.sp$cpo$cpo, na.rm = TRUE)
- )
-) %>% arrange(DIC)
-print(ml_comparison.frp)
-
-# tidy up !
-rm(A, coords_mat, field.idx, mesh, spde.ml, stack.frp,
-   ml.frp, ml.frp.re, ml.frp.re2)
+# #==========EXTRACTING THE SPATIAL EFFECT===========#
+# 
+# # Compute spatial effect for each grid location
+# spat.eff <- A %*% ml.frp.re.sp$summary.random$mesh.idx$mean  # FRP spatial field
+# # Compute 2.5% (lower bound) credible interval
+# lower <- A %*% ml.frp.re.sp$summary.random$mesh.idx$`0.025quant`
+# # Compute 97.5% (upper bound) credible interval
+# upper <- A %*% ml.frp.re.sp$summary.random$mesh.idx$`0.975quant`
+# # Compute uncertainty as the credible interval width (upper - lower)
+# uncertainty <- upper - lower
+# # convert to a spatial data frame
+# spat.eff.frp <- data.frame(
+#  x = coords_mat[, 1],  # Longitude
+#  y = coords_mat[, 2],  # Latitude
+#  spat_effect = as.vector(spat.eff),  # Convert matrix to vector
+#  lower = as.vector(lower),  # 2.5% quantile
+#  upper = as.vector(upper),  # 97.5% quantile
+#  uncertainty = as.vector(uncertainty),  # CI width
+#  response = "FRPc"
+# ) %>%
+#  distinct(x, y, .keep_all=T) %>%
+#  st_as_sf(., coords = c("x", "y"), crs = 4326)
+# glimpse(spat.eff.frp)
+# # write this a spatial file
+# out_fp = paste0(maindir,"data/spatial/mod/spatial_effect_FRP_spp.gpkg")
+# st_write(spat.eff.frp, out_fp, append=F)
+# # Tidy up!
+# rm(spat.eff, spat.eff.frp, lower, upper, uncertainty)
+# gc()
 
 
-#=================MODEL STATEMENTS=================#
+# #=================MODEL COMPARISON=================#
+# 
+# # Create a model comparison table
+# ml_comparison.frp <- tibble(
+#  Model = c("Baseline", 
+#            "W/Fire Random Effect", 
+#            "W/Fire + Temporal Effect",
+#            "W/Fire + Temporal + Spatial Effect"),
+#  Response = "FRP",
+#  DIC = c(
+#   ml.frp$dic$dic,
+#   ml.frp.re$dic$dic,
+#   ml.frp.re2$dic$dic,
+#   ml.frp.re.sp$dic$dic
+#  ),
+#  WAIC = c(
+#   ml.frp$waic$waic,
+#   ml.frp.re$waic$waic,
+#   ml.frp.re2$waic$waic,
+#   ml.frp.re.sp$waic$waic
+#  ),
+#  Marginal_LogLikelihood = c(
+#   ml.frp$mlik[1],
+#   ml.frp.re$mlik[1],
+#   ml.frp.re2$mlik[1],
+#   ml.frp.re.sp$mlik[1]
+#  ),
+#  Effective_Params = c(
+#   ml.frp$dic$p.eff,
+#   ml.frp.re$dic$p.eff,
+#   ml.frp.re2$dic$p.eff,
+#   ml.frp.re.sp$dic$p.eff
+#  ),
+#  Mean_CPO = c(
+#   mean(ml.frp$cpo$cpo, na.rm = TRUE),
+#   mean(ml.frp.re$cpo$cpo, na.rm = TRUE),
+#   mean(ml.frp.re2$cpo$cpo, na.rm = TRUE),
+#   mean(ml.frp.re.sp$cpo$cpo, na.rm = TRUE)
+#  )
+# ) %>% arrange(DIC)
+# print(ml_comparison.frp)
 
-# compute the exponentiated effects
-exp.frp <- ml.frp.re.sp$summary.fixed %>%
- rownames_to_column(var = "parameter") %>%
- mutate(
-  exp_mean = exp(mean) - 1,  # Convert log(FRP) effect to % difference
-  lower_ci = exp(`0.025quant`) - 1,  # 2.5% CI bound
-  upper_ci = exp(`0.975quant`) - 1   # 97.5% CI bound
- )
-# save this table
-write_csv(exp.frp, paste0(maindir,"data/tabular/mod/results/INLA_exp_FRP.csv"))
-# check results
-exp.frp%>%select(parameter,exp_mean,lower_ci,upper_ci)
+# # tidy up !
+# rm(A, coords_mat, field.idx, mesh, spde.ml, stack.frp, ml.frp 
+#    # ml.frp.re, 
+#    # ml.frp.re2
+#   )
+
+
+# #=================MODEL STATEMENTS=================#
+# 
+# # compute the exponentiated effects
+# exp.frp <- ml.frp.re.sp$summary.fixed %>%
+#  rownames_to_column(var = "parameter") %>%
+#  mutate(
+#   exp_mean = exp(mean) - 1,  # Convert log(FRP) effect to % difference
+#   lower_ci = exp(`0.025quant`) - 1,  # 2.5% CI bound
+#   upper_ci = exp(`0.975quant`) - 1   # 97.5% CI bound
+#  )
+# # save this table
+# write_csv(exp.frp, paste0(maindir,"data/tabular/mod/results/INLA_exp_FRP.csv"))
+# # check results
+# exp.frp%>%select(parameter,exp_mean,lower_ci,upper_ci)
 
 
 #===========POSTERIOR EFFECTS===========#
@@ -631,15 +664,17 @@ tidy.effects.frp <- tibble::tibble(
  unnest(data) %>%
  # Exclude the intercept
  filter(!parameter %in% c(
-  "(Intercept)","overlap","day_prop","fire_aspen"
+  "(Intercept)","overlap","day_prop"
   )
  ) %>%  
  mutate(
   effect = case_when(
-   str_detect(parameter, "ba_live") & !str_detect(parameter, "_total") ~ "Live basal area",
+   str_detect(parameter, "ba_live") & !str_detect(parameter, "_total") ~ "Total live basal area",
+   str_detect(parameter, "ba_adj") & !str_detect(parameter, "_total") ~ "Average live basal area",
    str_detect(parameter, "tpp_live") & !str_detect(parameter, "_total") ~ "Live tree abundance",
    str_detect(parameter, "dia_live") & !str_detect(parameter, "vpd:") ~ "Tree diameter",
    str_detect(parameter, "ht_live") & !str_detect(parameter, "vpd:") ~ "Tree height",
+   str_detect(parameter, "hdr_live") & !str_detect(parameter, "vpd:") ~ "Tree diameter/height ratio",
    str_detect(parameter, "qmd_live") & !str_detect(parameter, "vpd:") ~ "Quadratic mean diameter",
    str_detect(parameter, "fortyp_pct") & !str_detect(parameter, "vpd:") ~ "Percent cover",
    str_detect(parameter, "lf_canopy") ~ "Forest canopy cover (average)",
@@ -743,7 +778,9 @@ fortyp_effects.frp <- tidy.effects.frp %>%
  filter(
   str_detect(parameter, "fortypnm_gp"),
   # str_detect(parameter, ":fortyp_pct"),
-  !str_detect(parameter, ":fortyp_pct")
+  !str_detect(parameter, ":fortyp_pct"),
+  !str_detect(parameter, ":H_tpp")
+
  ) %>%
  mutate(
   group = case_when(
@@ -763,8 +800,9 @@ fortyp_effects.frp <- fortyp_effects.frp %>%
  )
 glimpse(fortyp_effects.frp)
 
+#####################
 # make the ridge plot
-frp.p1 <- ggplot(fortyp_effects.frp,
+(frp.p1 <- ggplot(fortyp_effects.frp,
        aes(x = x, y = fill_species, height = y,
            fill = group, 
            alpha=group,
@@ -780,13 +818,15 @@ frp.p1 <- ggplot(fortyp_effects.frp,
   values = c(
    "VPD-mediated" = "#e6ab02",
    "Forest type" = "#e6ab02"
-  )
+  ),
+  guide="none"
  ) +
  scale_alpha_manual(
   values = c(
    "VPD-mediated" = 0.2,
    "Forest type" = 0.98
-  )
+  ),
+  guide="none"
  ) +
  theme_classic() +
  # coord_cartesian(xlim = c(-0.30, 0.36)) +
@@ -795,12 +835,14 @@ frp.p1 <- ggplot(fortyp_effects.frp,
   axis.text.x = element_text(angle = 0, hjust = 0, size = 9),
   axis.title.y = element_text(size = 10, margin = margin(r = 12)),
   axis.title.x = element_text(size = 10, margin = margin(t = 12))
- )
-frp.p1
+ ))
 # Save the plot
 out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FORTYPCD_FRP_species.png')
-ggsave(out_png, dpi = 500, width = 7, height = 4, bg = 'white')
+ggsave(out_png, plot = frp.p1, dpi = 500, width = 7, height = 4, bg = 'white')
 
+
+##########################################################
+# plotting the effect of increasing forest cover percent #
 
 #######################################################
 # create the ridge plot for species structure metrics #
@@ -809,9 +851,12 @@ ggsave(out_png, dpi = 500, width = 7, height = 4, bg = 'white')
 param_order <- c(
  "Tree diameter",
  "Tree height",
+ "Tree diameter/height ratio",
  "Quadratic mean diameter",
+ "Average live basal area",
+ "Proportional tree abundance",
  "Live tree abundance",
- "Live basal area",
+ "Total live basal area",
  "Percent cover"
 )
 # filter to structure effects
@@ -839,7 +884,7 @@ sp_effects.frp <- tidy.effects.frp %>%
   fill = "Species"
  ) +
  # add a subplot label
- annotate("text", x = -0.20, y = 6.2,
+ annotate("text", x = -0.20, y = 4.1,
           label = expression(bold("(A)") ~ "FRPc"),
           size = 4, hjust = 0.2) +
  scale_fill_manual(
@@ -858,14 +903,14 @@ sp_effects.frp <- tidy.effects.frp %>%
   values = alpha_map,
   guide = "none"  # Still hide alpha scale
  ) +
- xlim(-0.20, 0.26) +
+ # xlim(-0.20, 0.26) +
  theme_classic() +
  theme(
   axis.text.y = element_text(angle = 0, hjust = 1, size=10),
   axis.text.x = element_text(angle = 0, hjust = 0, size=10),
   axis.title.y = element_text(size = 11, margin = margin(r = 8)),
   axis.title.x = element_text(size = 11, margin = margin(t = 8)),
-  legend.position = c(0.85, 0.28),
+  legend.position = c(0.82, 0.28),
   legend.background = element_rect(
    fill = scales::alpha("white", 0.6), 
    color = NA, linewidth = 1),
@@ -939,7 +984,7 @@ fixed_effects.frp <- tidy.effects.frp %>%
         !str_detect(parameter,"species"))
 
 # plot the ridges
-frp.p3 <- ggplot(fixed_effects.frp, 
+(frp.p3 <- ggplot(fixed_effects.frp, 
                  aes(x = x, y = effect, height = y)) +
  geom_density_ridges(stat = "identity", scale = 1.5, alpha = 0.7) +
  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
@@ -953,8 +998,7 @@ frp.p3 <- ggplot(fixed_effects.frp,
   legend.text = element_text(size = 8),
   axis.text.y = element_text(size = 10),
   axis.title.y = element_text(size = 12)
- )
-frp.p3
+ ))
 
 
 
@@ -977,8 +1021,8 @@ mf.cbi <- CBIbc_p90 ~ 1 +
  fortypnm_gp:fortyp_pct + # majority forest type by percent cover
  species_gp_n:ba_live + # species live basal area
  # species_gp_n:tpp_live_pr + # proportion of species abundance
- # species_gp_n:ht_live + # species average live tree height
- # species_gp_n:dia_live + # species average live tree diameter
+ species_gp_n:ht_live + # species average live tree height
+ species_gp_n:dia_live + # species average live tree diameter
  species_gp_n:qmd_live + # species average QMD
  # other fixed effects (global effects)
  lf_canopy + # gridcell forest canopy cover

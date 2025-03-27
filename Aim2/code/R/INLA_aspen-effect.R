@@ -241,7 +241,8 @@ pr.pc_prec <- list(
 
 # setup the model formula
 mf.frp <- log_frp_csum ~ 1 +
- vpd * (fortypnm_gp:aspen_ba_pr) + 
+ fortypnm_gp:aspen_ba_pr + 
+ vpd:fortypnm_gp:aspen_ba_pr +
  fortyp_pct + # forest type percent cover
  lf_canopy + # gridcell forest canopy percent
  tpp_dead_total + # proportion live/dead basal area
@@ -617,6 +618,67 @@ color_map = c(
    legend.text = element_text(size = 9)
   ))
 
+
+########################################
+# make a version without VPD mediation #
+(frp.p1.2 <- tidy.effects.frp %>%
+  mutate(fill_species = factor(fill_species, levels = aspen_order)) %>%
+  filter(effect == "Aspen proportion") %>%
+  ggplot(., aes(x = x, y = fill_species, height = y,
+                fill = effect,
+                alpha = effect,
+                color = effect
+  )) +
+  geom_density_ridges(stat = "identity", scale = 1.5, aes(alpha = effect)) +
+  # geom_density_ridges(stat = "identity", scale = 1.5, color = NA, alpha = 0) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+   x = "Effect size",
+   y = "Predominant Forest Type",
+   fill = "Effect"
+  ) +
+  scale_fill_manual(
+   values = c("Aspen proportion" = "#E69F00"),
+   labels = c("Aspen proportion" = "Aspen dominance (basal area)"),
+   guide = guide_legend(
+    override.aes = list(
+     fill = c("#E69F00"),
+     alpha = c(1),  # Match transparency
+     color = c(scales::alpha("black", 0.7)),
+     order = 1  # Ensure this legend appears first
+    )
+   )) +
+  scale_alpha_manual(
+   values = c("Aspen proportion" = 0.98),
+   guide = "none"
+  ) +
+  scale_color_manual(
+   values = c(
+    "Aspen proportion" = scales::alpha("black", 0.7)
+   ),
+   guide = "none"
+  ) +
+  # add a subplot label
+  annotate(
+   "text", x = -0.48, y = 8.8,
+   label = expression(bold("(A)") ~ "FRPc"),
+   size = 4, hjust = 0.2
+  ) +
+  theme_classic() +
+  coord_cartesian(xlim=c(-0.52,0.66)) +
+  theme(
+   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+   axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+   axis.title.x = element_blank(),
+   legend.position = c(0.80, 0.88),
+   legend.background = element_rect(
+    fill = scales::alpha("white", 0.6), 
+    color = NA, linewidth = 1),
+   legend.title = element_text(size = 10),
+   legend.text = element_text(size = 9)
+  ))
+
 # #######################################
 # # Version 2: no Gambel oak or White fir
 # (frp.p1.1 <- tidy.effects.frp %>%
@@ -674,7 +736,8 @@ da <- da %>%
 
 # setup the model formula
 mf.cbi <- CBIbc_p90 ~ 1 +
- vpd * (fortypnm_gp:aspen_ba_pr) + 
+ fortypnm_gp:aspen_ba_pr + 
+ vpd:fortypnm_gp:aspen_ba_pr +
  fortyp_pct + # forest type percent cover
  lf_canopy + # gridcell forest canopy percent
  tpp_dead_total + # proportion live/dead basal area
@@ -979,6 +1042,66 @@ color_map = c(
    legend.text = element_text(size = 9)
   ))
 
+########################################
+# make a version without VPD mediation #
+(cbi.p1.2 <- tidy.effects.cbi %>%
+  mutate(fill_species = factor(fill_species, levels = aspen_order)) %>%
+  filter(effect == "Aspen proportion") %>%
+  ggplot(., aes(x = x, y = fill_species, height = y,
+                fill = effect,
+                alpha = effect,
+                color = effect
+  )) +
+  geom_density_ridges(stat = "identity", scale = 1.5, aes(alpha = effect)) +
+  # geom_density_ridges(stat = "identity", scale = 1.5, color = NA, alpha = 0) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+   x = "Effect size",
+   y = "Predominant Forest Type",
+   fill = "Effect"
+  ) +
+  scale_fill_manual(
+   values = c("Aspen proportion" = "#E69F00"),
+   labels = c("Aspen proportion" = "Aspen dominance (basal area)"),
+   guide = guide_legend(
+    override.aes = list(
+     fill = c("#E69F00"),
+     alpha = c(1),  # Match transparency
+     color = c(scales::alpha("black", 0.7)),
+    order = 1  # Ensure this legend appears first
+   )
+  )) +
+  scale_alpha_manual(
+   values = c("Aspen proportion" = 0.98),
+   guide = "none"
+  ) +
+  scale_color_manual(
+   values = c(
+    "Aspen proportion" = scales::alpha("black", 0.7)
+   ),
+   guide = "none"
+  ) +
+  # add a subplot label
+  annotate(
+   "text", x = -0.48, y = 8.8,
+   label = expression(bold("(B)") ~ "CBIbc"),
+   size = 4, hjust = 0.2
+  ) +
+  theme_classic() +
+  coord_cartesian(xlim=c(-0.52,0.66)) +
+  theme(
+   axis.text.y = element_text(angle = 0, hjust = 1, size=9),
+   axis.text.x = element_text(angle = 0, hjust = 0, size=9),
+   axis.title.y = element_text(size = 10, margin = margin(r = 12)),
+   axis.title.x = element_blank(),
+   legend.position = c(0.80, 0.88),
+   legend.background = element_rect(
+    fill = scales::alpha("white", 0.6), 
+    color = NA, linewidth = 1),
+   legend.title = element_text(size = 10),
+   legend.text = element_text(size = 9)
+  ))
+
 # #######################################
 # # Version 2: no Gambel oak or White fir
 # (cbi.p1.1 <- tidy.effects.cbi %>%
@@ -1032,6 +1155,16 @@ frp.cbi.p1
 # Save the plot
 out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP-CBI_fortyp-VPD_panel.png')
 ggsave(out_png, plot = frp.cbi.p1, dpi = 500, width = 7, height = 5, bg = 'white')
+
+# without VPD
+cbi.p1.2 <- cbi.p1.2 +
+ theme(legend.position="none")
+# merge them
+frp.cbi.p2 <- frp.p1.2 / cbi.p1.2 # "/" stacks, "|" side-by-side
+frp.cbi.p2
+# Save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP-CBI_fortyp-VPD_panel_noVPD.png')
+ggsave(out_png, plot = frp.cbi.p2, dpi = 500, width = 7, height = 5, bg = 'white')
 
 
 
