@@ -231,20 +231,6 @@ ggsave(out_png, plot = map_radar, dpi = 500,
 #==============ALTERNATE PLOTS================#
 
 ###########
-# Heatmap #
-# Long format for ggplot heatmap
-cl_melt <- melt(cl_means, id.vars = "cluster")
-# plot it.
-ggplot(cl_melt, aes(x = variable, y = cluster, fill = value)) +
- geom_tile(color = "white") +
- scale_fill_viridis_c(option = "C", name = "Z-Score") +
- theme_minimal(base_size = 11) +
- theme(axis.text.x = element_text(angle = 45, hjust = 1),
-       panel.grid = element_blank()) +
- labs(title = "SOM Cluster Characterization (Standardized)",
-      x = "Variable", y = "Cluster")
-
-###########
 # Boxplot #
 codes_df <- as.data.frame(som.model$codes[[1]])
 colnames(codes_df) <- colnames(X)
@@ -279,6 +265,21 @@ ggsave(out_png, plot = p.box, dpi = 500,
 
 # #==============CLUSTER VIZ================#
 # 
+
+# ###########
+# # Heatmap #
+# # Long format for ggplot heatmap
+# cl_melt <- melt(cl_means, id.vars = "cluster")
+# # plot it.
+# ggplot(cl_melt, aes(x = variable, y = cluster, fill = value)) +
+#  geom_tile(color = "white") +
+#  scale_fill_viridis_c(option = "C", name = "Z-Score") +
+#  theme_minimal(base_size = 11) +
+#  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+#        panel.grid = element_blank()) +
+#  labs(title = "SOM Cluster Characterization (Standardized)",
+#       x = "Variable", y = "Cluster")
+
 # # Extract grid info
 # som_codes <- som.model$codes[[1]]
 # unit_coords <- som.model$grid$pts
