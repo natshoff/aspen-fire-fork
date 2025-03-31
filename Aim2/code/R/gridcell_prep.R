@@ -43,11 +43,6 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  select(-c('...1')) %>%
  # join in some of the fire information
  left_join(fires%>%select(-geom), by="Fire_ID") %>%
- # remove any missing FRP/CBI, prep columns
- filter(
-  frp_csum > 0, # make sure cumulative FRP > 0
-  # CBIbc_p90 > 0 # make sure CBI > 0
- ) %>% 
  # tidy and create attributes ...
  mutate(
   # tidy the temporal fields
@@ -94,9 +89,6 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   # scale the percentages
   forest_pct = forest_pct / 100,
   fire_aspenpct = fire_aspenpct / 100,
-  # create a gridcell-level live/dead proportion
-  ba_ld_pr = ba_dead_total / (ba_live_total + ba_dead_total),
-  tpp_ld_pr = tpp_dead_total / (tpp_live_total + tpp_dead_total),
   # create a 'northness' variable from aspect
   # -1 is south-facing, 1 is north-facing
   aspect_rad = aspect * pi / 180, # convert to radians
@@ -127,6 +119,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
   aspen_tpp_live = sum(if_else(species_gp_n == "quaking_aspen", tpp_live, 0.0), na.rm = TRUE),
   aspen_ht_live = mean(if_else(species_gp_n == "quaking_aspen", ht_live, NA_real_), na.rm = TRUE),
   aspen_dia_live = mean(if_else(species_gp_n == "quaking_aspen", dia_live, NA_real_), na.rm = TRUE),
+  aspen_qmd_live = mean(if_else(species_gp_n == "quaking_aspen", qmd_live, NA_real_), na.rm = TRUE),
   # proportions 
   aspen_ba_pr = if_else(ba_live_total > 0, aspen_ba_live / ba_live_total, 0.0),
   aspen_tpp_pr = if_else(tpp_live_total > 0, aspen_tpp_live / tpp_live_total, 0.0)
@@ -135,6 +128,7 @@ grid_tm <-  read_csv(fp)  %>% # read in the file
  # be sure there are no duplicate rows for grid/fire/species
  distinct(grid_idx, species_gp_n, .keep_all = TRUE) # remove duplicates
 glimpse(grid_tm)
+
 
 ############################################
 # calculate the distance to fire perimeter #
@@ -244,8 +238,10 @@ length(unique(grid_tm$Fire_ID))
 ###############################
 # Save a fire perimeter dataset
 fires <- fires %>% 
+ filter(Fire_ID %in% unique(da$Fire_ID)) %>%
+ select(-fire_perim) %>%
  st_as_sf() %>%
- filter(Fire_ID %in% unique(grid_tm$Fire_ID))
+ st_transform(st_crs(5070))
 st_write(fires,paste0(maindir,"data/spatial/mod/srm_fire_census_model_data.gpkg"),
          append=F)
 # tidy up
@@ -267,10 +263,9 @@ grid_tm.w <- grid_tm %>%
   fortyp_pct, forest_pct, lf_canopy, lf_height, H_tpp, H_ba,
   first_obs_doy, erc_dv, vpd, vs, elev, slope, aspect, tpi,
   ba_live_total, tpp_live_total, qmd_live_mean,
-  tree_ht_live_mean, tree_dia_live_mean, ba_ld_pr, tpp_ld_pr,
-  aspen_ba_live, aspen_tpp_live, aspen_ht_live, aspen_dia_live,
-  aspen_ba_pr, aspen_tpp_pr,
-  dist_to_perim, overlap, day_prop, tmid_n 
+  tree_ht_live_mean, tree_dia_live_mean, 
+  aspen_ba_live, aspen_tpp_live, aspen_ht_live, aspen_dia_live,  aspen_qmd_live,
+  aspen_ba_pr, aspen_tpp_pr, dist_to_perim, overlap, day_prop, tmid_n 
  ) %>%
  pivot_wider(
   names_from = species_gp_n,
@@ -309,9 +304,8 @@ resp_plot <- grid_tm %>%
                            CBIbc_p90 = "90th percentile CBIbc"))) +
  labs(x = "value",
       y = "Frequency") +
- theme_minimal()
+ theme_classic()
 resp_plot
-
 # save the plot.
 out_png <- paste0(maindir,'figures/INLA_ResponseDistribution_FRP-CBI.png')
 ggsave(out_png, plot = resp_plot, dpi=500, bg = 'white')
@@ -322,8 +316,8 @@ rm(resp_plot)
 #######################################
 # species-specific correlation matrix #
 sp_cor <- grid_tm %>%
- select(grid_idx, species_gp_n, tpp_live) %>%
- spread(species_gp_n, tpp_live, fill = 0)  # Reshape to wide format
+ select(grid_idx, species_gp_n, ba_live) %>%
+ spread(species_gp_n, ba_live, fill = 0)  # Reshape to wide format
 # compute the correlation matrix
 sp_cormat <- cor(sp_cor[,-1], use = "complete.obs", method = "spearman")
 ggcorrplot(sp_cormat, method = "circle", type = "lower",
@@ -334,46 +328,46 @@ out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesBA.png')
 ggsave(out_png, dpi=500, bg = 'white')
 rm(sp_cor,sp_cormat)
 
-########################################
-# correlation matrix for fixed effects #
-cor_da <- grid_tm %>%
- mutate(
-  log_fire_size = log(fire_acres)
- ) %>%
- select(
-  fortypnm_gp,
-  # species structure metrics
-  tpp_live, ba_live, qmd_live, ht_live, dia_live,
-  tpp_live_total, ba_live_total, qmd_live_mean,
-  tpp_dead_total, ba_dead_total, # dead BA and TPP
-  tpp_live_pr, ba_live_pr, # proportions of TPP and BA
-  forest_pct, fortyp_pct, # gridcell forest percent and majority forest type percent
-  H_ba, H_tpp, # gridcell species diversity (abundance- and dominance-based)
-  erc, erc_dv, vpd, vpd_dv, # day-of-burn climate
-  fm1000, rmin, tmmx, vs, # day-of-burn climate
-  elev, slope, tpi, northness,  # topography
-  lf_canopy, lf_height, # gridcell canopy percent/height and BA sum
-  day_prop, overlap, # VIIRS detection characteristics
-  log_fire_size, dist_to_perim # fire size and distance to perimeter
- ) %>%
- pivot_wider(
-  names_from = fortypnm_gp,
-  values_from = fortyp_pct,
-  values_fill = 0) %>%
- mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
-
-# Compute correlation matrix
-cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
-# Plot correlation matrix
-ggcorrplot(cor_mat, method = "circle",
- type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,
- colors = c("blue", "white", "red")
-)
-rm(cor_da, cor_mat) # tidy up
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_FixedEffects.png')
-ggsave(out_png, dpi=500, width=12, height=12, bg = 'white')
-
+# ########################################
+# # correlation matrix for fixed effects #
+# cor_da <- grid_tm %>%
+#  mutate(
+#   log_fire_size = log(fire_acres)
+#  ) %>%
+#  select(
+#   fortypnm_gp,
+#   # species structure metrics
+#   tpp_live, ba_live, qmd_live, ht_live, dia_live, hdr_live, ba_per,
+#   tpp_live_total, ba_live_total, qmd_live_mean,
+#   tpp_dead_total, ba_dead_total, # dead BA and TPP
+#   tpp_live_pr, ba_live_pr, # proportions of TPP and BA
+#   forest_pct, fortyp_pct, # gridcell forest percent and majority forest type percent
+#   H_ba, H_tpp, # gridcell species diversity (abundance- and dominance-based)
+#   erc, erc_dv, vpd, vpd_dv, # day-of-burn climate
+#   fm1000, rmin, tmmx, vs, # day-of-burn climate
+#   elev, slope, tpi, northness,  # topography
+#   lf_canopy, lf_height, # gridcell canopy percent/height and BA sum
+#   day_prop, overlap, # VIIRS detection characteristics
+#   log_fire_size, dist_to_perim # fire size and distance to perimeter
+#  ) %>%
+#  pivot_wider(
+#   names_from = fortypnm_gp,
+#   values_from = fortyp_pct,
+#   values_fill = 0) %>%
+#  mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
+# 
+# # Compute correlation matrix
+# cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
+# # Plot correlation matrix
+# ggcorrplot(cor_mat, method = "circle",
+#  type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,
+#  colors = c("blue", "white", "red")
+# )
+# rm(cor_da, cor_mat) # tidy up
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_FixedEffects.png')
+# ggsave(out_png, dpi=500, width=12, height=12, bg = 'white')
+# 
 
 
 

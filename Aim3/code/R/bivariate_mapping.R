@@ -180,6 +180,23 @@ ggsave(out_png, plot = p3, height = 7, width = 9, bg = 'white')
 
 
 ##########################################
+# Create a summary table for all variables
+sum.tbl <- firesheds.biv %>%
+ st_drop_geometry() %>%
+ select(-c(fs_id, sfs_id)) %>%
+ group_by(label, bi_class) %>%
+ summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
+# save the table.
+write_csv(sum.tbl, paste0(projdir, "Aim3/data/tabular/bivariate_summary_table.csv"))
+
+
+
+
+
+
+
+
+#########################################
 # Summarize current aspen cover per class
 biv_aspen <- firesheds.biv %>%
  group_by(label, bi_class) %>%
@@ -224,7 +241,6 @@ ggplot(biv_combined, aes(x = reorder(label, Value),
  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
  coord_flip()
 
-
 # proportion line chart
 biv_prop <- firesheds.biv %>%
  group_by(label) %>%
@@ -263,8 +279,6 @@ p3
 # save the plot.
 out_png <- paste0(projdir,'Aim3/figures/SouthernRockies_Bivar_FutureFireAspen_PanelMap.png')
 ggsave(out_png, plot = p3, height = 8, width = 8, bg = 'white')
-
-
 
 
 

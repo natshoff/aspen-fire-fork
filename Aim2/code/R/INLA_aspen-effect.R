@@ -38,20 +38,10 @@ grid_tm <- read_csv(fp) %>%
  filter(
   reburn == "FALSE"
  ) %>%
- # calculate the predominant species by BA and TPP
- group_by(grid_idx) %>%
- mutate(
-  dom_sp_ba = as.factor(species_gp_n[which.max(ba_live)]),
-  dom_sp_tpp = as.factor(species_gp_n[which.max(tpp_live)]),
-  dom_sp_ht = as.factor(species_gp_n[which.max(ht_live)]),
-  dom_sp_dia = as.factor(species_gp_n[which.max(dia_live)])
- ) %>%
- ungroup() %>%
  # select the model attributes ...
  select(
-  grid_idx, grid_index, Fire_ID, fortypnm_gp, species_gp_n, first_obs_date,
-  ba_live, tpp_live, qmd_live, ht_live, dia_live, H_ba, H_tpp,
-  tpp_live_total, tpp_dead_total, tpp_live_pr, qmd_live_mean,
+  grid_idx, grid_index, Fire_ID, fortypnm_gp, first_obs_date,
+  tpp_live_total, tpp_dead_total, tpp_live_pr,
   ba_live_total, ba_dead_total, ba_live_pr,  
   lf_canopy, lf_height, forest_pct, fortyp_pct,
   erc, erc_dv, vpd, vpd_dv, vs, elev, slope, northness, tpi,
@@ -59,11 +49,10 @@ grid_tm <- read_csv(fp) %>%
   log_frp_csum, CBIbc_p90, CBIbc_p95, CBIbc_p99, 
   x, y, fire_aspen, grid_aspen,
   aspen_ba_pr, aspen_tpp_pr, aspen_ba_live,
-  aspen_tpp_live, aspen_ht_live, aspen_dia_live,
-  dom_sp_ba, dom_sp_tpp, dom_sp_ht, dom_sp_dia
+  aspen_tpp_live, aspen_ht_live, aspen_dia_live
  ) %>%
- # be sure there are no duplicate rows for grid/fire/species
- distinct(grid_idx, species_gp_n, .keep_all = TRUE) # remove duplicates
+ # keep just one row per grid cell by predominant type
+ distinct(grid_idx, fortypnm_gp, .keep_all = TRUE)
 glimpse(grid_tm)
 
 ###################################################
@@ -104,60 +93,6 @@ summary(gridcell_counts$n_gridcells)
 # tidy up!
 rm(gridcell_counts,qt)
 
-
-##################################################
-# Assess the proportion of live basal area and TPP
-# filter potential noise ...
-# check proportion of live BA and TPP
-(qt.ba <- tibble::enframe(
- quantile(grid_tm$ba_live_pr, probs = seq(0, 1, by = .1)),
- name = "qt", value = "val"
-))
-(qt10.ba = qt.ba[2,]$val) # 10%
-# plot the distribution and 10th percentile line
-ggplot(grid_tm, aes(x = ba_live_pr)) +
- geom_histogram(
-  bins = 30, 
-  fill = "grey", 
-  color="grey40", 
-  alpha = 0.4
- ) +
- geom_vline(
-  xintercept = qt10.ba, color = "darkred", linewidth=1, linetype = "dashed"
- ) +
- labs(x = "Proportion live basal area", y = "Count") +
- theme_classic()
-# abundance (TPP)
-(qt.tpp <- tibble::enframe(
- quantile(grid_tm$tpp_live_pr, probs = seq(0, 1, by = .1)),
- name = "qt", value = "val"
-))
-(qt10.tpp = qt.tpp[2,]$val) # 10%
-
-# check percentage of rows below the threshold
-1 - dim(grid_tm %>% filter(
- ba_live_pr >= qt.ba[2,]$val |
-  tpp_live_pr >= qt.tpp[2,]$val
-))[1] / dim(grid_tm)[1]
-
-# filter species contributing less than the 10th percentile
-grid_tm <- grid_tm %>%
- # filter noise in species data
- filter(
-  # remove noise from small species proportions
-  # (ba_live_pr >= 0.10)
-  # either tpp or ba over their 10th percentile
-  (ba_live_pr >= qt10.ba | tpp_live_pr >= qt10.tpp)
- )
-rm(qt.ba, qt.tpp)
-
-###############################
-# check on the species counts #
-grid_tm %>% 
- group_by(species_gp_n) %>%
- summarise(n = length(species_gp_n)) %>%
- arrange(desc(n))
-
 ##################################
 # check on the aspen proportions #
 summary(grid_tm$aspen_ba_pr)
@@ -180,14 +115,11 @@ levels(grid_tm$grid_aspen)
 da <- grid_tm %>%
  mutate(
   # force aspen to be the baseline factor
-  species_gp_n = fct_relevel(species_gp_n, "quaking_aspen"),
   fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen"),
   # center/scale metrics / fixed effects
   across(
    c(aspen_ba_live, aspen_tpp_live, aspen_ht_live, # gridcell aspen metrics
      aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, # gridcell aspen metrics
-     H_ba, H_tpp, # grid-level diversity metrics
-     ba_live, dia_live, tpp_live, # structure metrics
      forest_pct, fortyp_pct, lf_canopy, lf_height, # gridcell forest characteristics
      ba_dead_total, ba_live_total, tpp_live_total, tpp_dead_total, # gridcell forest characteristics
      erc, erc_dv, vpd, vs, #climate
@@ -197,15 +129,12 @@ da <- grid_tm %>%
    ), ~ as.numeric(scale(., center=T, scale=T))
   )
  ) %>%
- # keep just one row per grid cell by predominant type
- distinct(grid_idx, fortypnm_gp, .keep_all = TRUE) %>%
  arrange(grid_idx)
 rm(grid_tm)
 gc()
 
 # check the factor levels
 # make sure aspen is first
-levels(da$species_gp_n)
 levels(da$fortypnm_gp)
 
 
@@ -321,11 +250,10 @@ X <- da %>%
  select(Fire_ID, first_obs_date, grid_index,
         aspen_ba_live, aspen_tpp_live, aspen_ht_live, 
         aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, 
-        fortypnm_gp, fortyp_pct, species_gp_n,  
-        tpp_live, tpp_live_pr, ba_live, ba_live_pr,    
-        lf_canopy, H_tpp, H_ba, ba_dead_total,
+        fortypnm_gp, fortyp_pct, ba_live_pr,    
+        lf_canopy, ba_dead_total, ba_live_total,
+        tpp_dead_total, tpp_live_total,
         erc_dv, vpd, vs, elev, slope, northness, tpi,
-        tpp_live_total, tpp_dead_total,
         grid_aspen, day_prop, overlap, dist_to_perim)
 
 # Create the INLA data stack
@@ -364,6 +292,23 @@ mean(ml.frp.re.sp$cpo$cpo, na.rm = TRUE)
 rm(stack.frp)
 gc()
 
+
+#=================MODEL STATEMENTS=================#
+
+# compute the exponentiated effects
+exp.frp <- ml.frp.re.sp$summary.fixed %>%
+ rownames_to_column(var = "parameter") %>%
+ mutate(
+  exp_mean = exp(mean) - 1,  # Convert log(FRP) effect to % difference
+  lower_ci = exp(`0.025quant`) - 1,  # 2.5% CI bound
+  upper_ci = exp(`0.975quant`) - 1   # 97.5% CI bound
+ )
+# save this table
+write_csv(exp.frp, paste0(maindir,"data/tabular/mod/results/INLA_exp_FRP_aspenEffect.csv"))
+# check results
+exp.frp%>%select(parameter,exp_mean,lower_ci,upper_ci)
+
+
 #===========POSTERIOR EFFECTS===========#
 
 #########################################
@@ -388,7 +333,7 @@ tidy.effects.frp <- tibble::tibble(
  # tidy the parameter
  mutate(
   effect = case_when(
-   str_detect(parameter, "vpd:") ~ "VPD-mediated",  
+   str_detect(parameter, ":vpd") ~ "VPD-mediated",  
    str_detect(parameter, ":aspen_ba_pr") & !str_detect(parameter, "vpd:")  ~ "Aspen proportion",
    TRUE ~ "Gloabl effect"  # For non-species effects
   ),
@@ -533,9 +478,6 @@ aspen_order <- tidy.effects.frp %>%
    legend.title = element_text(size = 11),
    legend.text = element_text(size = 10)
   ))
-# save the plot
-out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP_fortyp.png')
-ggsave(out_png, plot = frp.p1, dpi = 500, width = 7, height = 5, bg = 'white')
 
 #############
 # version two
@@ -617,6 +559,9 @@ color_map = c(
    legend.title = element_text(size = 10),
    legend.text = element_text(size = 9)
   ))
+# save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP_fortyp.png')
+ggsave(out_png, plot = frp.p1.1, dpi = 500, width = 7, height = 5, bg = 'white')
 
 
 ########################################
@@ -678,6 +623,9 @@ color_map = c(
    legend.title = element_text(size = 10),
    legend.text = element_text(size = 9)
   ))
+# save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_FRP_fortyp_noVPD.png')
+ggsave(out_png, plot = frp.p1.2, dpi = 500, width = 7, height = 5, bg = 'white')
 
 # #######################################
 # # Version 2: no Gambel oak or White fir
@@ -727,9 +675,14 @@ color_map = c(
 # COMPOSITE BURN INDEX #
 
 da <- da %>%
+ # either add a constant or remove zeros
  # gamma requires strictly positive
- # CBI = 0 is likely "unburned" but had some FRP detection
- mutate(CBIbc_p90 = CBIbc_p90 + 1e-6)
+ # CBI = 0 is likely "unburned" but had some FRP detection (?)
+ # filter zeros
+ filter(CBIbc_p90 > 0)
+# # add a very small constant
+# mutate(CBIbc_p90 = CBIbc_p90 + 1e-6)
+
 
 #################################################
 # 1. Baseline model (no random or latent effects)
@@ -771,14 +724,58 @@ mean(ml.cbi$cpo$cpo, na.rm = TRUE)
 ######################
 # Spatial SPDE model #
 
+# extract gridcell coordinates
+grid_sf <- da %>%
+ arrange(grid_index) %>%
+ st_as_sf(., coords = c("x", "y"), crs = 4326)
+# extract coordinates
+coords <- grid_sf %>% st_coordinates(.)
+# convert coordinates to a matrix for INLA
+coords_mat <- as.matrix(coords)
+
+# Define the spatial mesh
+mesh <- inla.mesh.2d(
+ loc = coords_mat, # Locations (grid centroids)
+ max.edge = c(1, 20), # Maximum edge lengths (inner and outer)
+ cutoff = 0.01, # Minimum distance between points (0.01deg = ~1.1km)
+ offset = c(0.5, 0.1) # Boundary buffer
+)
+# # Plot mesh to check
+# plot(mesh, main = "SPDE Mesh for FRP Model")
+# points(coords, col = "red", pch = 20)
+rm(coords)
+
+######################
+# Build the SPDE model
+spde.ml <- inla.spde2.pcmatern(
+ # Mesh and smoothness parameter
+ mesh = mesh, 
+ alpha = 2,
+ # P(practic.range < 0.3) = 0.5
+ prior.range = c(0.3, 0.5), # 50% certainty that range is below ~5km
+ # P(sigma > 1) = 0.01
+ prior.sigma = c(1, 0.05) # variance
+)
+
+# Compute the projector matrix (A)
+A <- inla.spde.make.A(
+ mesh = mesh,
+ loc = coords_mat
+)
+
+# Assign the spatial index
+field.idx <- inla.spde.make.index(
+ name = "mesh.idx",
+ n.spde = spde.ml$n.spde
+)
+str(field.idx)
+
 # Extract the predictor variables
 X <- da %>% 
  select(Fire_ID, first_obs_date, grid_index,
         aspen_ba_live, aspen_tpp_live, aspen_ht_live, 
         aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, 
-        fortypnm_gp, fortyp_pct, species_gp_n,  
-        tpp_live, tpp_live_pr, ba_live, ba_live_pr,    
-        lf_canopy, H_tpp, H_ba, ba_dead_total,
+        fortypnm_gp, fortyp_pct, lf_canopy, ba_dead_total,
         erc_dv, vpd, vs, elev, slope, northness, tpi,
         tpp_live_total, tpp_dead_total,
         grid_aspen, day_prop, overlap, dist_to_perim)
@@ -794,8 +791,9 @@ stack.cbi <- inla.stack(
  )
 )
 dim(inla.stack.A(stack.cbi))
-rm(X,coords_mat,field.idx,mesh)
+rm(grid_sf,X,coords_mat,field.idx,mesh)
 gc()
+
 
 ##########################
 # update the model formula
@@ -817,6 +815,22 @@ summary(ml.cbi.re.sp)
 mean(ml.cbi.re.sp$cpo$cpo, na.rm = TRUE)
 
 rm(A,spde.ml,stack.cbi) # tidy up
+
+
+#=================MODEL STATEMENTS=================#
+
+# compute the exponentiated effects
+exp.cbi <- ml.cbi.re.sp$summary.fixed %>%
+ rownames_to_column(var = "parameter") %>%
+ mutate(
+  exp_mean = exp(mean) - 1,  # Convert log(FRP) effect to % difference
+  lower_ci = exp(`0.025quant`) - 1,  # 2.5% CI bound
+  upper_ci = exp(`0.975quant`) - 1   # 97.5% CI bound
+ )
+# save this table
+write_csv(exp.cbi, paste0(maindir,"data/tabular/mod/results/INLA_exp_CBI_aspenEffect.csv"))
+# check results
+exp.cbi%>%select(parameter,exp_mean,lower_ci,upper_ci)
 
 
 #===========POSTERIOR EFFECTS===========#
@@ -843,9 +857,9 @@ tidy.effects.cbi <- tibble::tibble(
  # tidy the parameter
  mutate(
   effect = case_when(
-   str_detect(parameter, "vpd:") ~ "VPD-mediated",  
+   str_detect(parameter, ":vpd") ~ "VPD-mediated",  
    str_detect(parameter, ":aspen_ba_pr") & 
-    !str_detect(parameter, "vpd:")  ~ "Aspen proportion",
+    !str_detect(parameter, ":vpd")  ~ "Aspen proportion",
    TRUE ~ "Gloabl effect"  # For non-species effects
   ),
   # handle forest type names
@@ -956,10 +970,6 @@ color_map = c(
    legend.title = element_text(size = 10),
    legend.text = element_text(size = 9)
   ))
-# save the plot
-out_png <- paste0(maindir, 'figures/INLA_AspenEffect_CBI_fortyp.png')
-ggsave(out_png, plot = cbi.p1, dpi = 500, width = 7, height = 5, bg = 'white')
-
 
 #############
 # version two
@@ -1041,6 +1051,10 @@ color_map = c(
    legend.title = element_text(size = 10),
    legend.text = element_text(size = 9)
   ))
+# save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_CBI_fortyp.png')
+ggsave(out_png, plot = cbi.p1.1, dpi = 500, width = 7, height = 5, bg = 'white')
+
 
 ########################################
 # make a version without VPD mediation #
@@ -1101,6 +1115,9 @@ color_map = c(
    legend.title = element_text(size = 10),
    legend.text = element_text(size = 9)
   ))
+# save the plot
+out_png <- paste0(maindir, 'figures/INLA_AspenEffect_CBI_fortyp_noVPD.png')
+ggsave(out_png, plot = cbi.p1.2, dpi = 500, width = 7, height = 5, bg = 'white')
 
 # #######################################
 # # Version 2: no Gambel oak or White fir
