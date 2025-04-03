@@ -179,6 +179,16 @@ out_png <- paste0(projdir,'Aim3/figures/SouthernRockies_Bivar_FutureFireAspen_Pa
 ggsave(out_png, plot = p3, height = 7, width = 9, bg = 'white')
 
 
+firesheds.biv %>%
+ as_tibble() %>%
+ mutate(sfs_area_km2 = sfs_area_ha * 0.01) %>%
+ group_by(label) %>%
+ summarize(n = n(),
+           area_ha = sum(sfs_area_ha),
+           area_km2 = sum(sfs_area_km2))
+
+
+
 ##########################################
 # Create a summary table for all variables
 sum.tbl <- firesheds.biv %>%
@@ -190,9 +200,10 @@ sum.tbl <- firesheds.biv %>%
 write_csv(sum.tbl, paste0(projdir, "Aim3/data/tabular/bivariate_summary_table.csv"))
 
 
-
-
-
+##############################
+# Write out the spatial data #
+out_fp = paste0(projdir,"Aim3/data/spatial/mod/srm_firesheds_model_data_wBivar.gpkg")
+st_write(firesheds.biv, out_fp, append=F)
 
 
 

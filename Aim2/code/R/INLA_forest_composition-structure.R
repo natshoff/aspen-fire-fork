@@ -155,7 +155,7 @@ grid_tm <- grid_tm %>%
  filter(
   # remove noise from small species proportions
   # (ba_live_pr >= 0.10 | tpp_live_pr >= 0.05)
-  (ba_live_pr >= 0.10 | tpp_live_pr >= round(qt.tpp[2,]$val, digits = 2))
+  (ba_live_pr >= 0.10 | tpp_live_pr >= round(qt.tpp[3,]$val, digits = 2))
   # either tpp or ba over their 10th percentile
   # (ba_live_pr >= qt.tpp[2,]$val | tpp_live_pr >= qt.tpp[2,]$val)
  )
@@ -374,8 +374,8 @@ mf.frp <- log_frp_csum ~ 1 +
  # species_gp_n:tpp_live + # species total tree abundance
  species_gp_n:sdi_live + # species stand density index
  species_gp_n:hdr_live + # species height-diameter ratio
- # species_gp_n:ba_per + # species average basal area (ba/tree)
- species_gp_n:stand_dia + # species average stand diameter
+ species_gp_n:ba_per + # species average basal area (ba/tree)
+ # species_gp_n:stand_dia + # species average stand diameter
  # species_gp_n:qmd_live + # species average quadratic mean diameter
  # species_gp_n:ht_live + # species average live tree height
  # species_gp_n:dia_live + # species average live tree diameter
@@ -990,8 +990,8 @@ mf.cbi <- CBIbc_p90 ~ 1 +
  # species_gp_n:tpp_live + # species total tree abundance
  species_gp_n:sdi_live + # species stand density index
  species_gp_n:hdr_live + # species height-diameter ratio
- # species_gp_n:ba_per + # species average basal area (ba/tree)
- species_gp_n:stand_dia + # species average stand diameter
+ species_gp_n:ba_per + # species average basal area (ba/tree)
+ # species_gp_n:stand_dia + # species average stand diameter
  # species_gp_n:qmd_live + # species average quadratic mean diameter
  # species_gp_n:ht_live + # species average live tree height
  # species_gp_n:dia_live + # species average live tree diameter
@@ -1164,7 +1164,7 @@ summary(ml.cbi.re.sp)
 mean(ml.cbi.re.sp$cpo$cpo, na.rm = TRUE)
 # extract the hyperparameter summary
 (hyperpar.cbi <- ml.cbi.re.sp$summary.hyperpar)
-write_csv(hyperpar.cbi,paste0("data/tabular/mod/results/frp_hyperpar.csv"))
+write_csv(hyperpar.cbi,paste0("data/tabular/mod/results/cbi_hyperpar.csv"))
 
 
 #==========EXTRACTING THE SPATIAL EFFECT===========#

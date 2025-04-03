@@ -176,7 +176,7 @@ mf.frp <- log_frp_csum ~ 1 +
  lf_canopy + # gridcell forest canopy percent
  tpp_dead_total + # proportion live/dead basal area
  tpp_live_total + # total trees/pixel
- erc_dv + vs + # day-of-burn climate/weather
+ erc_dv + vpd + vs + # day-of-burn climate/weather
  elev + slope + northness + tpi + # topography 
  overlap + # gridcell VIIRS overlap (cumulative)
  day_prop + # gridcell proportion daytime detections 
@@ -333,7 +333,7 @@ tidy.effects.frp <- tibble::tibble(
  # tidy the parameter
  mutate(
   effect = case_when(
-   str_detect(parameter, ":vpd") ~ "VPD-mediated",  
+   str_detect(parameter, "vpd:") ~ "VPD-mediated",  
    str_detect(parameter, ":aspen_ba_pr") & !str_detect(parameter, "vpd:")  ~ "Aspen proportion",
    TRUE ~ "Gloabl effect"  # For non-species effects
   ),
@@ -695,7 +695,7 @@ mf.cbi <- CBIbc_p90 ~ 1 +
  lf_canopy + # gridcell forest canopy percent
  tpp_dead_total + # proportion live/dead basal area
  tpp_live_total + # total trees/pixel
- erc_dv + vs + # day-of-burn climate/weather
+ erc_dv + vpd + vs + # day-of-burn climate/weather
  elev + slope + northness + tpi + # topography 
  overlap + # gridcell VIIRS overlap (cumulative)
  day_prop + # gridcell proportion daytime detections 

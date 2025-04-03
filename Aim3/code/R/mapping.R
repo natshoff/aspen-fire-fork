@@ -280,8 +280,8 @@ ggsave(out_png, plot = p_merged, dpi = 500, width = 9, height = 6, bg = "white")
 
 # Reshape data to long format
 firesheds_l <- firesheds %>%
- pivot_longer(cols = c(Lodgepole, Aspen, Ponderosa, Piñon_juniper, 
-                       Sagebrush, Spruce_fir, Douglas_fir, White_fir, Gambel_oak),
+ pivot_longer(cols = c(lodgepole, aspen, ponderosa, pinon_juniper, 
+                       sagebrush, spruce_fir, douglas_fir, white_fir, gambel_oak),
               names_to = "forest", values_to = "pct_cover")
 
 # create a facet map
@@ -312,3 +312,193 @@ out_png <- paste0(projdir, "Aim3/figures/SRM_Firesheds_EVTSAF_Panel.png")
 ggsave(out_png, plot = p1, dpi = 500, width = 9, height = 6, bg = "white")
 
 
+####################################################
+#============= risk to communities ================#
+
+(p1 <- ggplot(firesheds) +
+ geom_sf(data = firesheds, aes(fill = hui_p90), color = NA) + 
+ scale_fill_viridis(option = "rocket", na.value = "gray80", direction=-1,
+                    name = "Housing Unit Impact") +
+ # scale_fill_distiller(palette = "Greens", direction = 1, 
+ #                      name = "Historic aspen suitability") +
+ guides(fill = guide_colourbar(direction = "vertical", 
+                               barwidth = 0.4, 
+                               barheight = 6, 
+                               ticks.colour = NA, 
+                               title.position = "left")) +
+ theme_void() +
+ theme(legend.title = element_text(angle = 90, size = 10),
+       legend.text = element_text(size = 9),
+       legend.position = c(0.35, 0.95),  
+       legend.justification = c(1, 1)) +
+ coord_sf(expand = FALSE) +
+ ggspatial::annotation_scale(location = "br", width_hint = 0.1,
+                             pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
+                             line_width = 0.5, text_pad = unit(0.15,"cm"),
+                             height = unit(0.15,"cm")) +
+ ggspatial::annotation_north_arrow(location = "br", which_north = "true",
+                                   pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
+                                   width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+                                   style = north_arrow_fancy_orienteering))
+
+(p2 <- ggplot(firesheds) +
+  geom_sf(data = firesheds, aes(fill = whp_p90), color = NA) + 
+  scale_fill_viridis(option = "rocket", na.value = "gray80", direction=-1,
+                     name = "Wildfire Hazard Potential") +
+  # scale_fill_distiller(palette = "Greens", direction = 1, 
+  #                      name = "Historic aspen suitability") +
+  guides(fill = guide_colourbar(direction = "vertical", 
+                                barwidth = 0.4, 
+                                barheight = 6, 
+                                ticks.colour = NA, 
+                                title.position = "left")) +
+  theme_void() +
+  theme(legend.title = element_text(angle = 90, size = 10),
+        legend.text = element_text(size = 9),
+        legend.position = c(0.35, 0.95),  
+        legend.justification = c(1, 1)) +
+  coord_sf(expand = FALSE) +
+  ggspatial::annotation_scale(location = "br", width_hint = 0.1,
+                              pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
+                              line_width = 0.5, text_pad = unit(0.15,"cm"),
+                              height = unit(0.15,"cm")) +
+  ggspatial::annotation_north_arrow(location = "br", which_north = "true",
+                                    pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
+                                    width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+                                    style = north_arrow_fancy_orienteering))
+
+(p3 <- ggplot(firesheds) +
+  geom_sf(data = firesheds, aes(fill = cfl_p90), color = NA) + 
+  scale_fill_viridis(option = "rocket", na.value = "gray80", direction=-1,
+                     name = "Condition Flame Length (mean)") +
+  # scale_fill_distiller(palette = "Greens", direction = 1, 
+  #                      name = "Historic aspen suitability") +
+  guides(fill = guide_colourbar(direction = "vertical", 
+                                barwidth = 0.4, 
+                                barheight = 6, 
+                                ticks.colour = NA, 
+                                title.position = "left")) +
+  theme_void() +
+  theme(legend.title = element_text(angle = 90, size = 10),
+        legend.text = element_text(size = 9),
+        legend.position = c(0.35, 0.95),  
+        legend.justification = c(1, 1)) +
+  coord_sf(expand = FALSE) +
+  ggspatial::annotation_scale(location = "br", width_hint = 0.1,
+                              pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
+                              line_width = 0.5, text_pad = unit(0.15,"cm"),
+                              height = unit(0.15,"cm")) +
+  ggspatial::annotation_north_arrow(location = "br", which_north = "true",
+                                    pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
+                                    width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+                                    style = north_arrow_fancy_orienteering))
+
+######################
+# merge the two maps #
+p_merged <- grid.arrange(
+ ggplotGrob(p3), 
+ ggplotGrob(p2), 
+ ggplotGrob(p1), 
+ ncol = 3
+)
+p_merged
+# Save the merged plot
+out_png <- paste0(projdir, "Aim3/figures/SRM_Firesheds_RiskToCommunities_Panel.png")
+ggsave(out_png, plot = p_merged, dpi = 500, width = 9, height = 6, bg = "white")
+
+
+####################################################
+#============= aspen patch metrics ================#
+
+(p1 <- ggplot(firesheds) +
+  geom_sf(data = firesheds, aes(fill = number_of_patches), color = NA) + 
+  # scale_fill_viridis(option = "rocket", na.value = "gray80", direction=-1,
+  #                    name = "Number of patches") +
+  scale_fill_distiller(palette = "Greens", direction = 1,
+                       name = "Number of patches", na.value = "white") +
+  guides(fill = guide_colourbar(direction = "vertical", 
+                                barwidth = 0.4, 
+                                barheight = 6, 
+                                ticks.colour = NA, 
+                                title.position = "left")) +
+  theme_void() +
+  theme(legend.title = element_text(angle = 90, size = 10),
+        legend.text = element_text(size = 9),
+        legend.position = c(0.35, 0.95),  
+        legend.justification = c(1, 1)) +
+  coord_sf(expand = FALSE) +
+  ggspatial::annotation_scale(location = "br", width_hint = 0.1,
+                              pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
+                              line_width = 0.5, text_pad = unit(0.15,"cm"),
+                              height = unit(0.15,"cm")) +
+  ggspatial::annotation_north_arrow(location = "br", which_north = "true",
+                                    pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
+                                    width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+                                    style = north_arrow_fancy_orienteering))
+
+(p2 <- ggplot(firesheds) +
+  geom_sf(data = firesheds, aes(fill = patch_density), color = NA) + 
+  # scale_fill_viridis(option = "rocket", na.value = "gray80", direction=-1,
+  #                    name = "Patch Density") +
+  scale_fill_distiller(palette = "Greens", direction = 1,
+                       name = "Patch Density", na.value = "white") +
+  guides(fill = guide_colourbar(direction = "vertical", 
+                                barwidth = 0.4, 
+                                barheight = 6, 
+                                ticks.colour = NA, 
+                                title.position = "left")) +
+  theme_void() +
+  theme(legend.title = element_text(angle = 90, size = 10),
+        legend.text = element_text(size = 9),
+        legend.position = c(0.35, 0.95),  
+        legend.justification = c(1, 1)) +
+  coord_sf(expand = FALSE) +
+  ggspatial::annotation_scale(location = "br", width_hint = 0.1,
+                              pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
+                              line_width = 0.5, text_pad = unit(0.15,"cm"),
+                              height = unit(0.15,"cm")) +
+  ggspatial::annotation_north_arrow(location = "br", which_north = "true",
+                                    pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
+                                    width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+                                    style = north_arrow_fancy_orienteering))
+
+(p3 <- ggplot(firesheds) +
+  geom_sf(data = firesheds, aes(fill = largest_patch_index), color = NA) + 
+  # scale_fill_viridis(option = "rocket", na.value = "gray80", direction=-1,
+  #                    name = "Largest patch") +
+  scale_fill_distiller(palette = "Greens", direction = 1,
+                       name = "Largest patch", na.value = "white") +
+  guides(fill = guide_colourbar(direction = "vertical", 
+                                barwidth = 0.4, 
+                                barheight = 6, 
+                                ticks.colour = NA, 
+                                title.position = "left")) +
+  theme_void() +
+  theme(legend.title = element_text(angle = 90, size = 10),
+        legend.text = element_text(size = 9),
+        legend.position = c(0.35, 0.95),  
+        legend.justification = c(1, 1)) +
+  coord_sf(expand = FALSE) +
+  ggspatial::annotation_scale(location = "br", width_hint = 0.1,
+                              pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
+                              line_width = 0.5, text_pad = unit(0.15,"cm"),
+                              height = unit(0.15,"cm")) +
+  ggspatial::annotation_north_arrow(location = "br", which_north = "true",
+                                    pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
+                                    width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+                                    style = north_arrow_fancy_orienteering))
+
+######################
+# merge the two maps #
+p_merged <- grid.arrange(
+ ggplotGrob(p1), 
+ ggplotGrob(p2), 
+ ggplotGrob(p3), 
+ ncol = 3
+)
+p_merged
+# Save the merged plot
+out_png <- paste0(projdir, "Aim3/figures/SRM_Firesheds_AspenPatches_Panel.png")
+ggsave(out_png, plot = p_merged, dpi = 500, width = 9, height = 6, bg = "white")
+
+ggsave(out_png, plot = p_merged, dpi = 500, width = 9, height = 6, bg = "white")

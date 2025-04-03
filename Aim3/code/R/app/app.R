@@ -1,3 +1,7 @@
+
+# shiny app for SOM analysis
+
+# libraries
 library(shiny)
 library(kohonen)
 library(tidyverse)
@@ -5,12 +9,14 @@ library(sf)
 library(scales)
 library(ggradar)
 
-projdir <- "/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim3/"
+# # set the working directory for the app
+# projdir <- "/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim3/"
+# setwd(paste0(projdir,"code/R/app/"))
 
 # Load firesheds
-firesheds <- st_read(paste0(projdir,'data/spatial/mod/srm_firesheds_model_data.gpkg'))
+firesheds <- st_read('data/srm_firesheds_model_data.gpkg')
 
-# Label lookup
+# Labels for the input variables
 var_labels <- c(
  trend_count = "Future fire occurrence (trend)",
  delta585 = "Aspen suitability change (SSP585)",
@@ -44,9 +50,15 @@ var_labels <- c(
 # Prepare input data
 X <- firesheds %>%
  st_drop_geometry() %>%
- rename(n_patches = number_of_patches, patch_den = patch_density, big_patch = largest_patch_index,
-        pop_den = pop_density_max, pop_n = pop_count_sum, wui_dist = wui_dist_mean,
-        lf_canopy = forest_cc_mean) %>%
+ rename(
+  n_patches = number_of_patches, 
+  patch_den = patch_density, 
+  big_patch = largest_patch_index,
+  pop_den = pop_density_max, 
+  pop_n = pop_count_sum, 
+  wui_dist = wui_dist_mean,
+  lf_canopy = forest_cc_mean
+ ) %>%
  mutate(aspen10_ha = aspen10_pixn * 0.01,
         forest_ha = forest_pixels * 0.09,
         aspen_forest = aspen10_ha / forest_ha,
@@ -61,20 +73,27 @@ names(cluster_colors) <- paste0("Cluster ", 1:6)
 # leaflet setup
 # UI
 ui <- fluidPage(
- titlePanel("Fireshed-Aspen SOM Explorer"),
+ titlePanel("Aspen Firesheds-SOM Explorer"),
+ 
  fluidRow(
-  column(3,
-         h4("Set Variable Weights"),
-         uiOutput("weight_sliders"),
-         numericInput("xdim", "Grid X dimension", 20, 5, 50),
-         numericInput("ydim", "Grid Y dimension", 20, 5, 50),
-         actionButton("run_som", "Update SOM")
+  column(
+   width = 3,
+   h4("Set Variable Weights"),
+   actionButton("run_som", "Update SOM"),
+   br(), br(),
+   div(style = "overflow-y: auto; max-height: 550px; padding-right: 10px;",
+       uiOutput("weight_sliders")
+   ),
+   numericInput("xdim", "Grid X dimension", 20, 5, 50),
+   numericInput("ydim", "Grid Y dimension", 20, 5, 50)
   ),
-  column(9,
-         fluidRow(
-          column(6, plotOutput("som_map", height = "450px")),
-          column(6, plotOutput("radar_plot", height = "450px"))
-         )
+  
+  column(
+   width = 9,
+   fluidRow(
+    column(6, plotOutput("som_map", height = "450px")),
+    column(6, plotOutput("radar_plot", height = "450px"))
+   )
   )
  )
 )
@@ -138,3 +157,4 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
+
